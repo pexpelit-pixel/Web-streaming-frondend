@@ -1,4 +1,4 @@
-// worker.js – XStreaming (Netflix-style + API Proxy + Upload + SEO)
+// worker.js – XStreaming (Netflix-style + API Proxy + Upload + SEO) 
 // Binding: DOOD_API (text), DOOD_KEY (secret), METADATA (KV optional)
 
 const corsHeaders = {
@@ -254,6 +254,7 @@ a{color:inherit;text-decoration:none}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
 `;
 
+// BASE HTML DENGAN SEARCH BAR YANG SUDAH DIPERBAIKI
 function baseHtml(title, body, extraHead = "") {
   return `<!DOCTYPE html>
 <html lang="id">
@@ -268,14 +269,31 @@ function baseHtml(title, body, extraHead = "") {
 <body>
   <nav class="nav">
     <a href="/" class="logo">XSTREAMING</a>
-    <input type="text" id="globalSearch" placeholder="Cari video..." onkeydown="if(event.key==='Enter') window.location='/search?q='+encodeURIComponent(this.value)">
+    <div style="display:flex;align-items:center;gap:0.5rem;flex:1;">
+      <input type="text" id="globalSearch" placeholder="Cari video..." style="flex:1;">
+      <button onclick="doSearch()" style="padding:0.7rem 1.2rem;border-radius:999px;background:#e50914;color:white;border:none;cursor:pointer;font-weight:600;">🔍</button>
+    </div>
     <select id="categoryFilter" onchange="applyFilter()">
       <option value="all">All Categories</option>
     </select>
   </nav>
   ${body}
-  <div class="footer">© 2026 XStreaming · Powered by DoodStream</div>
+  <div class="footer">© 2026 XStreaming · Powered by DoodStream | <a href="/uploader" style="color:var(--accent)">Upload</a></div>
   <script>
+    // Search function
+    function doSearch() {
+      const q = document.getElementById('globalSearch').value.trim();
+      if (q) {
+        window.location.href = '/search?q=' + encodeURIComponent(q);
+      }
+    }
+    // Juga trigger search saat tekan Enter di input
+    document.getElementById('globalSearch').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        doSearch();
+      }
+    });
+
     async function loadFilterOptions() {
       try {
         const res = await fetch('/api/folders');
