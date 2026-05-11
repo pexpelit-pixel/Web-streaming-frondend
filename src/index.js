@@ -1,6 +1,5 @@
-// ========== Cloudflare Worker: Streaming Frontend ala Netflix ==========
+// ========== WORKER STREAMING (FIXED) ==========
 // API backend: https://web-streaming.hanadrophtml.workers.dev
-// Binding KV (opsional): METADATA → untuk SEO slug & sitemap
 
 const API = "https://web-streaming.hanadrophtml.workers.dev";
 
@@ -36,6 +35,7 @@ a{color:inherit;text-decoration:none}
 .watch-info h1{font-size:2rem;margin-bottom:.5rem}
 .watch-info p{color:var(--muted)}
 .footer{text-align:center;padding:2rem;color:var(--muted);border-top:1px solid var(--line);margin-top:3rem}
+.loading{display:flex;align-items:center;justify-content:center;height:50vh;color:var(--muted);font-size:1.2rem}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
 `;
 
@@ -44,45 +44,50 @@ function escapeHtml(s) {
 }
 
 async function api(path) {
-  const res = await fetch(API + path);
-  if (!res.ok) throw new Error("API error: " + res.status);
+  const url = API + path;
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.error("API error:", url, res.status);
+    throw new Error("API error: " + res.status);
+  }
   return res.json();
 }
 
-// Ambil semua video & folder (paralel)
 async function loadData() {
   const [filesRes, foldersRes] = await Promise.all([
     api("/files?per_page=100"),
     api("/folder/list?only_folders=1")
   ]);
-  const files = filesRes.result?.files ?? [];
-  const folders = foldersRes.result?.folders ?? [];
-  return { files, folders };
+  return {
+    files: filesRes.result?.files ?? [],
+    folders: foldersRes.result?.folders ?? []
+  };
 }
 
-// ---------- PAGE RENDERER ----------
 function page(title, body) {
   return `<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>${escapeHtml(title)}</title><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet"><style>${CSS}</style></head><body><nav class="nav"><a href="/" class="logo">XPANAS</a><input type="text" id="q" placeholder="Cari video..." onkeydown="if(event.key==='Enter')location.href='/search?q='+encodeURIComponent(this.value)"></nav>${body}<div class="footer">© 2026 XPANAS · Powered by DoodStream</div></body></html>`;
 }
 
 function card(v) {
-  return `<div class="video-card" onclick="location.href='/watch?file_code=${v.file_code}'"><img src="${v.single_img||''}" onerror="this.src='https://picsum.photos/200/130'"><div class="title">${escapeHtml(v.title)}</div><div class="meta">${v.views} views · ${v.length}s</div></div>`;
+  const img = v.single_img || v.splash_img || '';
+  return `<div class="video-card" onclick="location.href='/watch?file_code=${v.file_code}'"><img src="${img}" onerror="this.src='https://picsum.photos/200/130'"><div class="title">${escapeHtml(v.title)}</div><div class="meta">${v.views} views · ${v.length}s</div></div>`;
 }
 
 function homePage(hero, trending, categories) {
   const rows = categories.map(c => {
+    if (!c.videos.length) return '';
     const cards = c.videos.map(card).join("");
     return `<div class="row-container"><h2>📁 ${escapeHtml(c.name)}</h2><div class="scroll-row">${cards}</div></div>`;
   }).join("");
 
-  const heroHTML = hero ? `<div class="hero" style="background-image:url(${hero.single_img||''})"><div class="hero-content"><h1>${escapeHtml(hero.title)}</h1><p>🔥 Trending #1 · ${hero.views} views</p><button onclick="location.href='/watch?file_code=${hero.file_code}'">▶ Play</button><button class="secondary" onclick="location.href='/watch?file_code=${hero.file_code}'">ℹ Info</button></div></div>` : "";
+  const heroHTML = hero ? `<div class="hero" style="background-image:url(${hero.single_img||hero.splash_img||''})"><div class="hero-content"><h1>${escapeHtml(hero.title)}</h1><p>🔥 Trending #1 · ${hero.views} views</p><button onclick="location.href='/watch?file_code=${hero.file_code}'">▶ Play</button><button class="secondary" onclick="location.href='/watch?file_code=${hero.file_code}'">ℹ Info</button></div></div>` : "";
 
   const trendingCards = trending.map(card).join("");
   return page("XPANAS · Streaming", `${heroHTML}<div class="row-container"><h2>🔥 Trending Now</h2><div class="scroll-row">${trendingCards}</div></div>${rows}`);
 }
 
 function searchPage(query, results) {
-  const grid = results.map(card).join("") || "<p style='padding:2rem'>Tidak ditemukan.</p>";
+  const grid = results.map(card).join("") || "<p style='padding:2rem;color:var(--muted)'>Tidak ada hasil untuk \"" + escapeHtml(query) + "\"</p>";
   return page(`Search: ${escapeHtml(query)}`, `<h2 style="padding:2rem 2rem 0">Hasil untuk "${escapeHtml(query)}"</h2><div class="search-grid">${grid}</div>`);
 }
 
@@ -90,7 +95,10 @@ function watchPage(video) {
   return page(video.title, `<div class="watch-container"><iframe src="https://dood.wf/e/${video.filecode}" allowfullscreen></iframe><div class="watch-info"><h1>${escapeHtml(video.title)}</h1><p>Uploaded ${video.uploaded} · 👁 ${video.views} views · ⏱ ${video.length}s</p></div></div>`);
 }
 
-// ---------- MAIN FETCH ----------
+function errorPage(msg) {
+  return page("Error", `<div class="loading">⚠️ ${escapeHtml(msg)}</div>`);
+}
+
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
@@ -100,15 +108,23 @@ export default {
       // --- Home ---
       if (p === "/") {
         const { files, folders } = await loadData();
+        
+        if (!files.length) {
+          return new Response(errorPage("Belum ada video. Upload dulu di dashboard."), {
+            headers: { "content-type": "text/html; charset=utf-8" }
+          });
+        }
+
         const byViews = [...files].sort((a, b) => parseInt(b.views) - parseInt(a.views));
         const hero = byViews[0];
         const trending = byViews.slice(0, 10);
 
         // Kategori: tiap folder
-        const categories = await Promise.all(folders.map(async f => {
+        const categories = folders.map(f => {
           const vids = files.filter(v => v.fld_id === f.fld_id).slice(0, 15);
           return { name: f.name, id: f.fld_id, videos: vids };
-        }));
+        }).filter(c => c.videos.length > 0);
+        
         // Video tanpa folder
         const root = files.filter(v => v.fld_id === "0");
         if (root.length) categories.unshift({ name: "Uncategorized", id: "0", videos: root.slice(0, 15) });
@@ -124,7 +140,7 @@ export default {
         if (!fc) return new Response("Missing file_code", { status: 400 });
         const info = await api("/file/info?file_code=" + fc);
         const video = info.result?.[0];
-        if (!video) return new Response("Not found", { status: 404 });
+        if (!video) return new Response(errorPage("Video tidak ditemukan"), { status: 404, headers: { "content-type": "text/html; charset=utf-8" } });
         return new Response(watchPage(video), {
           headers: { "content-type": "text/html; charset=utf-8" }
         });
@@ -140,32 +156,9 @@ export default {
         });
       }
 
-      // --- SEO slug redirect (optional KV) ---
-      if (p.startsWith("/video/") && env.METADATA) {
-        const slug = p.replace("/video/", "");
-        const meta = await env.METADATA.get(`slug:${slug}`, { type: "json" });
-        if (meta?.file_code) return Response.redirect(u.origin + `/watch?file_code=${meta.file_code}`, 301);
-        return new Response("Not found", { status: 404 });
-      }
-
-      // --- Sitemap (optional KV) ---
-      if (p === "/sitemap.xml" && env.METADATA) {
-        const list = await env.METADATA.list({ prefix: "slug:" });
-        let urls = "";
-        for (const k of list.keys) {
-          const data = await env.METADATA.get(k.name, { type: "json" });
-          if (data?.file_code) urls += `<url><loc>https://${u.host}/video/${k.name.replace("slug:","")}</loc></url>`;
-        }
-        return new Response(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`, { headers: { "content-type": "application/xml" } });
-      }
-
-      if (p === "/robots.txt") {
-        return new Response(`User-agent: *\nAllow: /\nSitemap: https://${u.host}/sitemap.xml`, { headers: { "content-type": "text/plain" } });
-      }
-
-      return new Response("Not Found", { status: 404 });
+      return new Response(errorPage("Halaman tidak ditemukan"), { status: 404, headers: { "content-type": "text/html; charset=utf-8" } });
     } catch (e) {
-      return new Response("Error: " + e.message, { status: 500 });
+      return new Response(errorPage(e.message), { status: 500, headers: { "content-type": "text/html; charset=utf-8" } });
     }
   }
 };
