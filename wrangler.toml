@@ -1,0 +1,10 @@
+# wrangler.toml
+name = "streaming"
+main = "index.js"
+compatibility_date = "2025-05-12"
+compatibility_flags = ["nodejs_compat"]
+
+
+kv_namespaces = [
+  { binding = "METADATA", id = "2ce8f48a3acb41f485ff1d5281c3d44e" }
+]
