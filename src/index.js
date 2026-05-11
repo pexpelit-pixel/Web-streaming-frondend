@@ -8,6 +8,11 @@ const corsHeaders = {
   "access-control-allow-headers": "*",
 };
 
+const SEARCH_MAX_PAGES = 5;
+const SEARCH_PER_PAGE = 100;
+const SEARCH_RESULT_LIMIT = 250;
+const SEARCH_CACHE_TTL = 600;
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -151,6 +156,14 @@ function extractFileCodeFromUploadResponse(data) {
   );
 }
 
+function slugify(str = "") {
+  return String(str)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 async function doodFetch(env, path, params = {}) {
   const base = env.DOOD_API || "https://doodapi.co";
   const url = new URL(path, base);
@@ -221,6 +234,27 @@ async function saveMeta(env, fileCode, payload) {
   }
 }
 
+async function getSearchCache(env, key) {
+  if (!env.METADATA) return null;
+  try {
+    return await env.METADATA.get(key, { type: "json" });
+  } catch {
+    return null;
+  }
+}
+
+async function setSearchCache(env, key, payload) {
+  if (!env.METADATA) return false;
+  try {
+    await env.METADATA.put(key, JSON.stringify(payload), {
+      expirationTtl: SEARCH_CACHE_TTL,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function enrichVideos(env, videos = [], folderMap = new Map()) {
   if (!Array.isArray(videos) || !videos.length) return [];
   if (!env.METADATA) {
@@ -243,23 +277,130 @@ async function enrichVideos(env, videos = [], folderMap = new Map()) {
   );
 }
 
+function scoreVideo(query, video) {
+  const q = normalizeText(query);
+  if (!q) return 0;
+
+  const meta = video.__meta || {};
+  const folderName = normalizeText(video.__folderName || "");
+  const title = normalizeText(video.title || "");
+  const desc = normalizeText(meta.description || "");
+  const tags = normalizeText(Array.isArray(meta.tags) ? meta.tags.join(" ") : meta.tags || "");
+  const code = normalizeText(video.file_code || "");
+  const blob = [title, folderName, tags, desc, code].filter(Boolean).join(" ");
+
+  if (!blob) return 0;
+
+  let score = 0;
+
+  if (title === q) score += 1.0;
+  if (blob === q) score += 0.9;
+  if (title.includes(q)) score += 0.42;
+  if (folderName && folderName.includes(q)) score += 0.22;
+  if (tags && tags.includes(q)) score += 0.26;
+  if (desc && desc.includes(q)) score += 0.12;
+
+  const qTokens = q.split(" ").filter(Boolean);
+  const titleTokens = new Set(title.split(" ").filter(Boolean));
+  const folderTokens = new Set(folderName.split(" ").filter(Boolean));
+  const tagTokens = new Set(tags.split(" ").filter(Boolean));
+  const descTokens = new Set(desc.split(" ").filter(Boolean));
+  const blobTokens = new Set(blob.split(" ").filter(Boolean));
+
+  let hitTitle = 0;
+  let hitFolder = 0;
+  let hitTags = 0;
+  let hitDesc = 0;
+  let hitAny = 0;
+
+  for (const t of qTokens) {
+    if (titleTokens.has(t)) hitTitle++;
+    if (folderTokens.has(t)) hitFolder++;
+    if (tagTokens.has(t)) hitTags++;
+    if (descTokens.has(t)) hitDesc++;
+    if (blobTokens.has(t)) hitAny++;
+  }
+
+  if (qTokens.length) {
+    score += (hitTitle / qTokens.length) * 0.30;
+    score += (hitTags / qTokens.length) * 0.20;
+    score += (hitFolder / qTokens.length) * 0.15;
+    score += (hitDesc / qTokens.length) * 0.08;
+    score += (hitAny / qTokens.length) * 0.10;
+  }
+
+  const simTitle = similarity(q, title);
+  const simBlob = similarity(q, blob);
+  score += simTitle * 0.25;
+  score += simBlob * 0.12;
+
+  const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
+  const popularity = Math.min(1, Math.log10(views + 1) / 6);
+  score += popularity * 0.08;
+
+  return Math.min(1.5, score);
+}
+
+async function buildSmartSearch(env, query) {
+  const q = String(query || "").trim();
+  const normalized = normalizeText(q);
+
+  const cacheKey = `search:${encodeURIComponent(normalized || q).slice(0, 120)}:v3`;
+  const cached = await getSearchCache(env, cacheKey);
+  if (cached && Array.isArray(cached.results)) return cached;
+
+  const pages = Array.from({ length: SEARCH_MAX_PAGES }, (_, i) => i + 1);
+
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map(page =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: String(SEARCH_PER_PAGE),
+      })
+    ),
+  ]);
+
+  const folders = extractFolders(foldersRes);
+  const folderMap = new Map();
+  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
+
+  const allFiles = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, allFiles, folderMap);
+
+  const ranked = enriched
+    .map(v => ({ v, score: scoreVideo(q, v) }))
+    .filter(x => x.score > 0.18)
+    .sort((a, b) => b.score - a.score)
+    .map(x => x.v)
+    .slice(0, SEARCH_RESULT_LIMIT);
+
+  const allTags = [...new Set(
+    ranked.flatMap(v => Array.isArray(v.__meta?.tags) ? v.__meta.tags : [])
+  )];
+
+  const payload = {
+    q,
+    totalCorpus: enriched.length,
+    total: ranked.length,
+    allTags,
+    results: ranked,
+    created_at: new Date().toISOString(),
+  };
+
+  await setSearchCache(env, cacheKey, payload);
+  return payload;
+}
+
 function videoCard(v) {
   const tags = v.__meta?.tags || [];
   return `
     <div class="video-card" onclick="location.href='/watch?file_code=${encodeURIComponent(v.file_code || "")}'">
       <img src="${escapeHtml(v.single_img || v.splash_img || "")}" onerror="this.src='https://picsum.photos/200/130'">
       <div class="title">${escapeHtml(v.title || "Untitled")}</div>
-      <div class="meta">${escapeHtml(v.views || "0")} views • ${escapeHtml(v.length || "0")}s</div>
+      <div class="meta">${escapeHtml(v.views || "0")} views • ${escapeHtml(v.length || "0")}s${v.__folderName ? ` • ${escapeHtml(v.__folderName)}` : ""}</div>
       ${renderTags(tags)}
     </div>`;
-}
-
-function slugify(str = "") {
-  return String(str)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 function baseHtml(title, body, extraHead = "") {
@@ -384,6 +525,9 @@ a{color:inherit;text-decoration:none}
 .progress{height:20px;background:rgba(255,255,255,.1);border-radius:10px;margin-top:1rem;overflow:hidden}
 .progress-fill{height:100%;width:0%;background:var(--accent);transition:width .3s}
 .upload-note{margin-top:1rem;color:var(--muted);line-height:1.6}
+.search-upload-cta{max-width:980px;margin:1rem auto 0;padding:0 1rem}
+.search-upload-cta .box{background:linear-gradient(135deg, rgba(229,9,20,.15), rgba(255,255,255,.05));border:1px solid var(--line);border-radius:16px;padding:1rem 1.2rem}
+.search-upload-cta .box a{display:inline-block;margin-top:.8rem;padding:.7rem 1rem;border-radius:999px;background:var(--accent);font-weight:700}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
 `;
 
@@ -418,8 +562,16 @@ async function handleApi(req, env) {
 
     if (path === "/api/search") {
       const q = url.searchParams.get("q") || "";
-      const data = await doodFetch(env, "/api/search/videos", { search_term: q });
-      return json(data);
+      if (!q.trim()) return json({ q, total: 0, results: [] });
+
+      const data = await buildSmartSearch(env, q);
+      return json({
+        q: data.q,
+        total: data.total,
+        totalCorpus: data.totalCorpus,
+        allTags: data.allTags,
+        results: data.results,
+      });
     }
 
     if (path === "/api/folders") {
@@ -718,159 +870,6 @@ async function homePage(req, env) {
   );
 }
 
-function scoreVideo(query, video) {
-  const q = normalizeText(query);
-  if (!q) return 0;
-
-  const meta = video.__meta || {};
-  const folderName = normalizeText(video.__folderName || "");
-  const title = normalizeText(video.title || "");
-  const desc = normalizeText(meta.description || "");
-  const tags = normalizeText(Array.isArray(meta.tags) ? meta.tags.join(" ") : meta.tags || "");
-  const code = normalizeText(video.file_code || "");
-  const blob = [title, folderName, tags, desc, code].filter(Boolean).join(" ");
-
-  if (!blob) return 0;
-
-  let score = 0;
-
-  if (title === q) score += 1.0;
-  if (blob === q) score += 0.9;
-  if (title.includes(q)) score += 0.42;
-  if (folderName && folderName.includes(q)) score += 0.22;
-  if (tags && tags.includes(q)) score += 0.26;
-  if (desc && desc.includes(q)) score += 0.12;
-
-  const qTokens = q.split(" ").filter(Boolean);
-  const titleTokens = new Set(title.split(" ").filter(Boolean));
-  const folderTokens = new Set(folderName.split(" ").filter(Boolean));
-  const tagTokens = new Set(tags.split(" ").filter(Boolean));
-  const descTokens = new Set(desc.split(" ").filter(Boolean));
-  const blobTokens = new Set(blob.split(" ").filter(Boolean));
-
-  let hitTitle = 0;
-  let hitFolder = 0;
-  let hitTags = 0;
-  let hitDesc = 0;
-  let hitAny = 0;
-
-  for (const t of qTokens) {
-    if (titleTokens.has(t)) hitTitle++;
-    if (folderTokens.has(t)) hitFolder++;
-    if (tagTokens.has(t)) hitTags++;
-    if (descTokens.has(t)) hitDesc++;
-    if (blobTokens.has(t)) hitAny++;
-  }
-
-  if (qTokens.length) {
-    score += (hitTitle / qTokens.length) * 0.30;
-    score += (hitTags / qTokens.length) * 0.20;
-    score += (hitFolder / qTokens.length) * 0.15;
-    score += (hitDesc / qTokens.length) * 0.08;
-    score += (hitAny / qTokens.length) * 0.10;
-  }
-
-  const simTitle = similarity(q, title);
-  const simBlob = similarity(q, blob);
-  score += simTitle * 0.25;
-  score += simBlob * 0.12;
-
-  const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
-  const popularity = Math.min(1, Math.log10(views + 1) / 6);
-  score += popularity * 0.08;
-
-  return Math.min(1.5, score);
-}
-
-async function searchPage(req, env) {
-  const url = new URL(req.url);
-  const q = url.searchParams.get("q") || "";
-  const page = parseInt(url.searchParams.get("page") || "1", 10);
-  const perPage = 24;
-
-  if (!q.trim()) {
-    return new Response(
-      baseHtml("Search", `
-        <div style="padding:2rem">
-          <h2>Masukkan kata pencarian</h2>
-          <p class="muted">Contoh: anime, action, music, tutorial, vlog</p>
-        </div>
-      `, `<meta name="robots" content="noindex,nofollow">`),
-      { headers: { "content-type": "text/html; charset=utf-8" } }
-    );
-  }
-
-  const [foldersRes, exactRes, broadRes] = await Promise.all([
-    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
-    doodFetch(env, "/api/search/videos", {
-      search_term: q,
-      page: "1",
-      per_page: "50",
-    }),
-    doodFetch(env, "/api/file/list", {
-      page: "1",
-      per_page: "200",
-    }),
-  ]);
-
-  const folders = extractFolders(foldersRes);
-  const folderMap = new Map();
-  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
-
-  const exact = extractFiles(exactRes);
-  const broad = extractFiles(broadRes);
-
-  const pool = dedupeByFileCode([...exact, ...broad]);
-  const enriched = await enrichVideos(env, pool, folderMap);
-
-  const ranked = enriched
-    .map(v => ({ v, score: scoreVideo(q, v) }))
-    .filter(x => x.score > 0.18)
-    .sort((a, b) => b.score - a.score)
-    .map(x => x.v);
-
-  const total = ranked.length;
-  const results = ranked.slice((page - 1) * perPage, page * perPage);
-
-  const allTags = [...new Set(
-    ranked.flatMap(v => Array.isArray(v.__meta?.tags) ? v.__meta.tags : [])
-  )];
-
-  const grid = results.length
-    ? results.map(videoCard).join("")
-    : `<p style="padding:2rem;color:var(--muted)">Tidak ada hasil yang mendekati "${escapeHtml(q)}"</p>`;
-
-  const paginationHtml = total > perPage ? `
-    <div class="pagination">
-      ${page > 1 ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page - 1}'">‹ Prev</button>` : ""}
-      <span>${page} / ${Math.max(1, Math.ceil(total / perPage))}</span>
-      ${page * perPage < total ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page + 1}'">Next ›</button>` : ""}
-    </div>
-  ` : "";
-
-  const extraHead = `
-    <meta name="description" content="Hasil pencarian video untuk ${escapeHtml(q)} di XStreaming">
-    <meta name="keywords" content="${escapeHtml([q, ...allTags].filter(Boolean).join(", "))}">
-    <meta name="robots" content="index,follow">
-    <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
-  `;
-
-  return new Response(
-    baseHtml(`Search: ${escapeHtml(q)}`, `
-      <div style="padding:2rem 2rem 0">
-        <h2 style="margin-bottom:.4rem">Hasil untuk "${escapeHtml(q)}"</h2>
-        <p class="muted">${total} video yang mirip ditemukan</p>
-      </div>
-
-      ${allTags.length ? `<div class="tag-cloud">${allTags.slice(0, 18).map(t => `<span class="tag-chip">#${escapeHtml(t)}</span>`).join("")}</div>` : ""}
-
-      <div class="search-grid">${grid}</div>
-      ${paginationHtml}
-    `, extraHead),
-    { headers: { "content-type": "text/html; charset=utf-8" } }
-  );
-}
-
 function uploadFormsHtml() {
   return `
   <section class="uploader" id="upload-section">
@@ -1048,47 +1047,106 @@ function uploadPage() {
   );
 }
 
-function watchPage(req, env) {
+async function searchPage(req, env) {
   const url = new URL(req.url);
-  return (async () => {
-    const code = url.searchParams.get("file_code");
-    if (!code) return new Response("Missing file_code", { status: 400 });
+  const q = url.searchParams.get("q") || "";
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const perPage = 24;
 
-    const info = await doodFetch(env, "/api/file/info", { file_code: code });
-    const video = info?.result?.[0] || info?.result || null;
-
-    if (!video) {
-      return new Response(
-        baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
-        { status: 404, headers: { "content-type": "text/html; charset=utf-8" } }
-      );
-    }
-
-    const meta = await getMeta(env, code);
-    const title = meta?.title || video.title || "Video";
-    const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
-    const tags = meta?.tags || [];
-    const extraHead = `
-      <meta name="description" content="${escapeHtml(description)}">
-      <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
-      <meta name="robots" content="index,follow">
-    `;
-
+  if (!q.trim()) {
     return new Response(
-      baseHtml(title, `
-        <div class="watch-container">
-          <iframe src="https://dood.wf/e/${encodeURIComponent(video.filecode || code)}" allowfullscreen></iframe>
-          <div class="watch-info">
-            <h1>${escapeHtml(title)}</h1>
-            <p>${escapeHtml(description)}</p>
-            ${renderTags(tags)}
-            <p>👁 ${escapeHtml(video.views || "0")} views • ⏱ ${escapeHtml(video.length || "0")}s</p>
-          </div>
+      baseHtml("Search", `
+        <div style="padding:2rem">
+          <h2>Masukkan kata pencarian</h2>
+          <p class="muted">Contoh: anime, action, music, tutorial, vlog</p>
         </div>
-      `, extraHead),
+      `, `<meta name="robots" content="noindex,nofollow">`),
       { headers: { "content-type": "text/html; charset=utf-8" } }
     );
-  })();
+  }
+
+  const data = await buildSmartSearch(env, q);
+  const results = data.results || [];
+  const total = data.total || 0;
+  const allTags = data.allTags || [];
+
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  const pageResults = results.slice((page - 1) * perPage, page * perPage);
+
+  const grid = pageResults.length
+    ? pageResults.map(videoCard).join("")
+    : `<p style="padding:2rem;color:var(--muted)">Tidak ada hasil yang mendekati "${escapeHtml(q)}"</p>`;
+
+  const paginationHtml = total > perPage ? `
+    <div class="pagination">
+      ${page > 1 ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page - 1}'">‹ Prev</button>` : ""}
+      <span>${page} / ${pageCount}</span>
+      ${page < pageCount ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page + 1}'">Next ›</button>` : ""}
+    </div>
+  ` : "";
+
+  const extraHead = `
+    <meta name="description" content="Hasil pencarian video untuk ${escapeHtml(q)} di XStreaming">
+    <meta name="keywords" content="${escapeHtml([q, ...allTags].filter(Boolean).join(", "))}">
+    <meta name="robots" content="index,follow">
+    <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
+  `;
+
+  return new Response(
+    baseHtml(`Search: ${escapeHtml(q)}`, `
+      <div style="padding:2rem 2rem 0">
+        <h2 style="margin-bottom:.4rem">Hasil untuk "${escapeHtml(q)}"</h2>
+        <p class="muted">${total} video yang mirip ditemukan dari ${data.totalCorpus || 0} data</p>
+      </div>
+
+      ${allTags.length ? `<div class="tag-cloud">${allTags.slice(0, 18).map(t => `<span class="tag-chip">#${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+
+      <div class="search-grid">${grid}</div>
+      ${paginationHtml}
+    `, extraHead),
+    { headers: { "content-type": "text/html; charset=utf-8" } }
+  );
+}
+
+async function watchPage(req, env) {
+  const url = new URL(req.url);
+  const code = url.searchParams.get("file_code");
+  if (!code) return new Response("Missing file_code", { status: 400 });
+
+  const info = await doodFetch(env, "/api/file/info", { file_code: code });
+  const video = info?.result?.[0] || info?.result || null;
+
+  if (!video) {
+    return new Response(
+      baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
+      { status: 404, headers: { "content-type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  const meta = await getMeta(env, code);
+  const title = meta?.title || video.title || "Video";
+  const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
+  const tags = meta?.tags || [];
+  const extraHead = `
+    <meta name="description" content="${escapeHtml(description)}">
+    <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
+    <meta name="robots" content="index,follow">
+  `;
+
+  return new Response(
+    baseHtml(title, `
+      <div class="watch-container">
+        <iframe src="https://dood.wf/e/${encodeURIComponent(video.filecode || code)}" allowfullscreen></iframe>
+        <div class="watch-info">
+          <h1>${escapeHtml(title)}</h1>
+          <p>${escapeHtml(description)}</p>
+          ${renderTags(tags)}
+          <p>👁 ${escapeHtml(video.views || "0")} views • ⏱ ${escapeHtml(video.length || "0")}s</p>
+        </div>
+      </div>
+    `, extraHead),
+    { headers: { "content-type": "text/html; charset=utf-8" } }
+  );
 }
 
 function embedPage(path) {
