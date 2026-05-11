@@ -1,5 +1,6 @@
 # wrangler.toml
-name = "streaming"
+# wrangler.toml
+name = 'xstreaming'
 main = "src/index.js"
 compatibility_date = "2025-05-12"
 compatibility_flags = ["nodejs_compat"]
