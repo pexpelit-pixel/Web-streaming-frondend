@@ -8,12 +8,20 @@ const corsHeaders = {
   "access-control-allow-headers": "*",
 };
 
-function escapeHtml(str) {
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: corsHeaders,
+  });
+}
+
+function escapeHtml(str = "") {
   return String(str ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function asArray(v) {
@@ -42,7 +50,17 @@ function extractFiles(data) {
   );
 }
 
-// Helper untuk panggil DoodStream API (GET / query string)
+function pickUploadUrl(serverRes) {
+  return (
+    serverRes?.result?.url ||
+    serverRes?.result?.upload_url ||
+    serverRes?.result ||
+    serverRes?.upload_url ||
+    serverRes?.url ||
+    ""
+  );
+}
+
 async function doodFetch(env, path, params = {}) {
   const base = env.DOOD_API || "https://doodapi.co";
   const url = new URL(path, base);
@@ -55,7 +73,7 @@ async function doodFetch(env, path, params = {}) {
     }
   }
 
-  const res = await fetch(url, {
+  const res = await fetch(url.toString(), {
     headers: {
       "user-agent": "Mozilla/5.0",
       accept: "application/json,text/plain,*/*",
@@ -70,14 +88,13 @@ async function doodFetch(env, path, params = {}) {
   }
 }
 
-// Helper untuk POST ke DoodStream API (JSON body)
 async function doodPost(env, path, body = {}) {
   const base = env.DOOD_API || "https://doodapi.co";
   const url = new URL(path, base);
 
   if (env.DOOD_KEY) url.searchParams.set("key", env.DOOD_KEY);
 
-  const res = await fetch(url, {
+  const res = await fetch(url.toString(), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -95,13 +112,11 @@ async function doodPost(env, path, body = {}) {
   }
 }
 
-// ---------- API Proxy Handlers ----------
 async function handleApi(req, env) {
   const url = new URL(req.url);
   const path = url.pathname;
 
   try {
-    // GET /api/files
     if (path === "/api/files") {
       const data = await doodFetch(env, "/api/file/list", {
         page: url.searchParams.get("page") || "1",
@@ -109,41 +124,36 @@ async function handleApi(req, env) {
         fld_id: url.searchParams.get("fld_id") || "",
         created: url.searchParams.get("created") || "",
       });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/file/info
     if (path === "/api/file/info") {
       const code = url.searchParams.get("file_code");
       if (!code) throw new Error("file_code required");
       const data = await doodFetch(env, "/api/file/info", { file_code: code });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/file/check
     if (path === "/api/file/check") {
       const code = url.searchParams.get("file_code");
       if (!code) throw new Error("file_code required");
       const data = await doodFetch(env, "/api/file/check", { file_code: code });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/search
     if (path === "/api/search") {
       const q = url.searchParams.get("q") || "";
       const data = await doodFetch(env, "/api/search/videos", { search_term: q });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/folders
     if (path === "/api/folders") {
       const data = await doodFetch(env, "/api/folder/list", {
         only_folders: "1",
       });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // POST /api/upload/url
     if (path === "/api/upload/url" && req.method === "POST") {
       const body = await req.json();
       if (!body.url) throw new Error("url required");
@@ -154,32 +164,43 @@ async function handleApi(req, env) {
         new_title: body.new_title || body.title || "",
       });
 
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/upload/server
     if (path === "/api/upload/server") {
       const data = await doodFetch(env, "/api/upload/server");
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // POST /api/upload/file
     if (path === "/api/upload/file" && req.method === "POST") {
       const form = await req.formData();
       const file = form.get("file");
-      if (!file) throw new Error("file required");
 
-      // 1. Dapatkan server upload
+      if (!file) {
+        return json({ error: "file required" }, 400);
+      }
+
+      const fld_id = form.get("fld_id") || "0";
+      const new_title = form.get("new_title") || "";
+
       const serverRes = await doodFetch(env, "/api/upload/server");
-      const uploadUrl = serverRes?.result || serverRes?.upload_url || serverRes?.url;
-      if (!uploadUrl) throw new Error("Could not get upload server");
+      const uploadUrl = pickUploadUrl(serverRes);
 
-      // 2. Forward file ke server upload Dood
+      if (!uploadUrl) {
+        return json(
+          {
+            error: "Could not get upload server",
+            debug: serverRes,
+          },
+          500
+        );
+      }
+
       const doodForm = new FormData();
       if (env.DOOD_KEY) doodForm.append("api_key", env.DOOD_KEY);
-      doodForm.append("file", file, file.name);
-      doodForm.append("fld_id", form.get("fld_id") || "0");
-      if (form.get("new_title")) doodForm.append("file_title", form.get("new_title"));
+      doodForm.append("file", file, file.name || "upload.mp4");
+      doodForm.append("fld_id", fld_id);
+      if (new_title) doodForm.append("file_title", new_title);
 
       const uploadRes = await fetch(uploadUrl, {
         method: "POST",
@@ -191,27 +212,39 @@ async function handleApi(req, env) {
       try {
         uploadData = JSON.parse(text);
       } catch {
-        uploadData = { raw: text, status: uploadRes.status };
+        uploadData = {
+          error: "Upload response not JSON",
+          raw: text.slice(0, 1000),
+          status: uploadRes.status,
+        };
       }
 
-      return new Response(JSON.stringify(uploadData), { headers: corsHeaders });
+      if (!uploadRes.ok) {
+        return json(
+          {
+            error: "Upload failed",
+            upstream: uploadData,
+            status: uploadRes.status,
+          },
+          500
+        );
+      }
+
+      return json({ ok: true, result: uploadData });
     }
 
-    // GET /api/upload/list
     if (path === "/api/upload/list") {
       const data = await doodFetch(env, "/api/urlupload/list");
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/upload/status
     if (path === "/api/upload/status") {
       const code = url.searchParams.get("file_code");
       if (!code) throw new Error("file_code required");
       const data = await doodFetch(env, "/api/urlupload/status", { file_code: code });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // POST /api/folder/create
     if (path === "/api/folder/create" && req.method === "POST") {
       const body = await req.json();
       if (!body.name) throw new Error("name required");
@@ -219,10 +252,9 @@ async function handleApi(req, env) {
         name: body.name,
         parent_id: body.parent_id || "0",
       });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // POST /api/file/rename
     if (path === "/api/file/rename" && req.method === "POST") {
       const body = await req.json();
       if (!body.file_code || !body.title) {
@@ -232,10 +264,9 @@ async function handleApi(req, env) {
         file_code: body.file_code,
         title: body.title,
       });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // POST /api/file/move
     if (path === "/api/file/move" && req.method === "POST") {
       const body = await req.json();
       if (!body.file_code || !body.fld_id) {
@@ -245,36 +276,33 @@ async function handleApi(req, env) {
         file_code: body.file_code,
         fld_id: body.fld_id,
       });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/dmca
     if (path === "/api/dmca") {
       const last = url.searchParams.get("last") || "24";
       const data = await doodFetch(env, "/api/file/dmca", { last });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    // GET /api/encodings
     if (path === "/api/encodings") {
       const code = url.searchParams.get("file_code") || "";
       const data = await doodFetch(env, "/api/file/encodings", { file_code: code });
-      return new Response(JSON.stringify(data), { headers: corsHeaders });
+      return json(data);
     }
 
-    return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: corsHeaders,
-    });
+    return json({ error: "Not found" }, 404);
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: corsHeaders,
-    });
+    return json(
+      {
+        error: err.message,
+        stack: err.stack,
+      },
+      500
+    );
   }
 }
 
-// ---------- Halaman Publik ----------
 const CSS = `
 :root{--bg:#0a0a0a;--panel:#1a1a2e;--line:rgba(255,255,255,.08);--text:#fff;--muted:#aaa;--accent:#e50914}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -599,6 +627,7 @@ async function watchPage(req, env) {
 
   const info = await doodFetch(env, "/api/file/info", { file_code: code });
   const video = info?.result?.[0] || info?.result || null;
+
   if (!video) {
     return new Response(
       baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
@@ -691,31 +720,26 @@ async function sitemapPage(env, origin) {
   return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8" } });
 }
 
-// ---------- Main Worker ----------
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const path = url.pathname;
 
-    // CORS preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
 
     try {
-      // API proxy
       if (path.startsWith("/api/")) {
         return handleApi(req, env);
       }
 
-      // Public pages
       if (path === "/") return homePage(req, env);
       if (path === "/watch") return watchPage(req, env);
       if (path === "/search") return searchPage(req, env);
       if (path === "/upload" || path === "/uploader") return uploadPage();
       if (path.startsWith("/embed/")) return embedPage(path);
 
-      // SEO (KV required)
       if (path.startsWith("/video/") && env.METADATA) {
         const slug = path.replace("/video/", "");
         const data = await env.METADATA.get(`slug:${slug}`, { type: "json" });
