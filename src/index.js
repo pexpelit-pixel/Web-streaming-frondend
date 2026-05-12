@@ -2,10 +2,10 @@
 // Binding: DOOD_API (text), DOOD_KEY (secret), METADATA (KV optional)
 
 const corsHeaders = {
-    "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "*",
+  "content-type": "application/json; charset=utf-8",
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "*",
 };
 
 const SEARCH_MAX_PAGES = 5;
@@ -15,699 +15,658 @@ const SEARCH_CACHE_TTL = 600;
 const HOT_LOOKBACK_HOURS = 96;
 
 function json(data, status = 200) {
-    return new Response(JSON.stringify(data, null, 2), {
-        status,
-        headers: corsHeaders,
-    });
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: corsHeaders,
+  });
 }
 
 function htmlHeaders(extra = {}) {
-    return {
-        "content-type": "text/html; charset=utf-8",
-        "x-robots-tag": "index, follow",
-        "cache-control": "public, max-age=3600, s-maxage=86400",
-        ...extra,
-    };
+  return {
+    "content-type": "text/html; charset=utf-8",
+    "x-robots-tag": "index, follow",
+    "cache-control": "public, max-age=3600, s-maxage=86400",
+    ...extra,
+  };
 }
 
 function htmlResponse(html, status = 200, extra = {}) {
-    return new Response(html, {
-        status,
-        headers: htmlHeaders(extra)
-    });
+  return new Response(html, { status, headers: htmlHeaders(extra) });
 }
 
 function escapeHtml(str = "") {
-    return String(str ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
+  return String(str ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function escapeRegExp(str = "") {
-    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function asArray(v) {
-    if (Array.isArray(v)) return v;
-    if (!v) return [];
-    return [v];
+  if (Array.isArray(v)) return v;
+  if (!v) return [];
+  return [v];
 }
 
 function extractFolders(data) {
-    return (
-        data?.result?.folders ||
-        data?.result?.data ||
-        data?.folders ||
-        data?.result || []
-    );
+  return (
+    data?.result?.folders ||
+    data?.result?.data ||
+    data?.folders ||
+    data?.result || []
+  );
 }
 
 function extractFiles(data) {
-    const r = data?.result;
-    if (Array.isArray(r?.files)) return r.files;
-    if (Array.isArray(r?.data)) return r.data;
-    if (Array.isArray(data?.files)) return data.files;
-    if (Array.isArray(data?.result)) return data.result;
-    if (r && typeof r === "object" && (r.file_code || r.title)) return [r];
-    return [];
+  const r = data?.result;
+  if (Array.isArray(r?.files)) return r.files;
+  if (Array.isArray(r?.data)) return r.data;
+  if (Array.isArray(data?.files)) return data.files;
+  if (Array.isArray(data?.result)) return data.result;
+  if (r && typeof r === "object" && (r.file_code || r.title)) return [r];
+  return [];
 }
 
 function pickUploadUrl(serverRes) {
-    return (
-        serverRes?.result?.url ||
-        serverRes?.result?.upload_url ||
-        serverRes?.result ||
-        serverRes?.upload_url ||
-        serverRes?.url ||
-        ""
-    );
+  return (
+    serverRes?.result?.url ||
+    serverRes?.result?.upload_url ||
+    serverRes?.result ||
+    serverRes?.upload_url ||
+    serverRes?.url ||
+    ""
+  );
 }
 
 function parseTags(tags = "") {
-    if (Array.isArray(tags)) {
-        return [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
-    }
-    return [...new Set(
-        String(tags)
-        .split(/[,;\n]+/g)
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
-    )].slice(0, 12);
+  if (Array.isArray(tags)) {
+    return [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+  }
+  return [...new Set(
+    String(tags)
+      .split(/[,;\n]+/g)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  )].slice(0, 12);
 }
 
 function normalizeText(str = "") {
-    return String(str)
-        .toLowerCase()
-        .normalize("NFKD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9\s]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+  return String(str)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function levenshtein(a = "", b = "") {
-    a = normalizeText(a);
-    b = normalizeText(b);
+  a = normalizeText(a);
+  b = normalizeText(b);
 
-    if (!a) return b.length;
-    if (!b) return a.length;
+  if (!a) return b.length;
+  if (!b) return a.length;
 
-    const m = a.length;
-    const n = b.length;
-    const dp = Array.from({
-        length: m + 1
-    }, () => new Array(n + 1).fill(0));
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
 
-    for (let i = 0; i <= m; i++) dp[i][0] = i;
-    for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
 
-    for (let i = 1; i <= m; i++) {
-        const ac = a.charCodeAt(i - 1);
-        for (let j = 1; j <= n; j++) {
-            const cost = ac === b.charCodeAt(j - 1) ? 0 : 1;
-            dp[i][j] = Math.min(
-                dp[i - 1][j] + 1,
-                dp[i][j - 1] + 1,
-                dp[i - 1][j - 1] + cost
-            );
-        }
+  for (let i = 1; i <= m; i++) {
+    const ac = a.charCodeAt(i - 1);
+    for (let j = 1; j <= n; j++) {
+      const cost = ac === b.charCodeAt(j - 1) ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
     }
+  }
 
-    return dp[m][n];
+  return dp[m][n];
 }
 
 function similarity(a = "", b = "") {
-    const na = normalizeText(a);
-    const nb = normalizeText(b);
-    if (!na || !nb) return 0;
-    const maxLen = Math.max(na.length, nb.length);
-    if (!maxLen) return 0;
-    const dist = levenshtein(na, nb);
-    return Math.max(0, 1 - dist / maxLen);
+  const na = normalizeText(a);
+  const nb = normalizeText(b);
+  if (!na || !nb) return 0;
+  const maxLen = Math.max(na.length, nb.length);
+  if (!maxLen) return 0;
+  const dist = levenshtein(na, nb);
+  return Math.max(0, 1 - dist / maxLen);
 }
 
 function highlightHtml(text = "", query = "") {
-    const safe = escapeHtml(text);
-    const q = normalizeText(query);
-    if (!q) return safe;
+  const safe = escapeHtml(text);
+  const q = normalizeText(query);
+  if (!q) return safe;
 
-    const tokens = [...new Set(q.split(" ").filter(Boolean))].filter((t) => t.length > 1);
-    if (!tokens.length) return safe;
+  const tokens = [...new Set(q.split(" ").filter(Boolean))].filter((t) => t.length > 1);
+  if (!tokens.length) return safe;
 
-    let out = safe;
-    for (const token of tokens.sort((a, b) => b.length - a.length)) {
-        const re = new RegExp(`(${escapeRegExp(token)})`, "ig");
-        out = out.replace(re, '<mark class="kw">$1</mark>');
-    }
-    return out;
+  let out = safe;
+  for (const token of tokens.sort((a, b) => b.length - a.length)) {
+    const re = new RegExp(`(${escapeRegExp(token)})`, "ig");
+    out = out.replace(re, '<mark class="kw">$1</mark>');
+  }
+  return out;
 }
 
 function renderTags(tags = [], query = "") {
-    if (!Array.isArray(tags) || !tags.length) return "";
-    return `<div class="tags">${tags
+  if (!Array.isArray(tags) || !tags.length) return "";
+  return `<div class="tags">${tags
     .slice(0, 6)
     .map((t) => `<span class="tag">#${highlightHtml(t, query)}</span>`)
     .join("")}</div>`;
 }
 
 function dedupeByFileCode(list = []) {
-    const map = new Map();
-    for (const item of list) {
-        const key = item?.file_code || item?.filecode || item?.id || JSON.stringify(item);
-        if (!map.has(key)) map.set(key, item);
-    }
-    return [...map.values()];
+  const map = new Map();
+  for (const item of list) {
+    const key = item?.file_code || item?.filecode || item?.id || JSON.stringify(item);
+    if (!map.has(key)) map.set(key, item);
+  }
+  return [...map.values()];
 }
 
 function extractFileCodeFromUploadResponse(data) {
-    return (
-        data?.result?.file_code ||
-        data?.result?.filecode ||
-        data?.file_code ||
-        data?.filecode ||
-        data?.result?.[0]?.file_code ||
-        data?.result?.[0]?.filecode ||
-        ""
-    );
+  return (
+    data?.result?.file_code ||
+    data?.result?.filecode ||
+    data?.file_code ||
+    data?.filecode ||
+    data?.result?.[0]?.file_code ||
+    data?.result?.[0]?.filecode ||
+    ""
+  );
 }
 
 function slugify(str = "") {
-    return String(str)
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "");
+  return String(str)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function isBot(ua = "") {
-    ua = String(ua).toLowerCase();
-    return [
-        "googlebot",
-        "bingbot",
-        "yandex",
-        "duckduckbot",
-        "baiduspider",
-        "facebookexternalhit",
-        "twitterbot",
-        "linkedinbot",
-        "slurp",
-        "crawler",
-        "spider",
-        "telegrambot",
-        "discordbot",
-        "embed",
-        "preview",
-    ].some((x) => ua.includes(x));
+  ua = String(ua).toLowerCase();
+  return [
+    "googlebot",
+    "bingbot",
+    "yandex",
+    "duckduckbot",
+    "baiduspider",
+    "facebookexternalhit",
+    "twitterbot",
+    "linkedinbot",
+    "slurp",
+    "crawler",
+    "spider",
+    "telegrambot",
+    "discordbot",
+    "embed",
+    "preview",
+  ].some((x) => ua.includes(x));
 }
 
 function seoKeywords(title = "", tags = []) {
-    const base = normalizeText(title)
-        .split(" ")
-        .filter(Boolean)
-        .slice(0, 12);
+  const base = normalizeText(title)
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 12);
 
-    return [...new Set([
-            ...base,
-            ...tags,
-            `${title} streaming`,
-            `${title} watch online`,
-            `${title} subtitle indonesia`,
-            `${title} full hd`,
-            `${title} 1080p`,
-        ])]
-        .filter(Boolean)
-        .slice(0, 50)
-        .join(", ");
+  return [...new Set([
+    ...base,
+    ...tags,
+    `${title} streaming`,
+    `${title} watch online`,
+    `${title} subtitle indonesia`,
+    `${title} full hd`,
+    `${title} 1080p`,
+  ])]
+    .filter(Boolean)
+    .slice(0, 50)
+    .join(", ");
 }
 
 function relatedKeywords(tags = [], title = "") {
-    const base = normalizeText(title).split(" ").filter(Boolean);
-    const extra = [
-        "watch online",
-        "full hd",
-        "subtitle indonesia",
-        "streaming free",
-        "1080p",
-        "4k",
-        "latest",
-        "hot",
-    ];
-    return [...new Set([...base, ...tags, ...extra])].filter(Boolean).slice(0, 40);
+  const base = normalizeText(title).split(" ").filter(Boolean);
+  const extra = [
+    "watch online",
+    "full hd",
+    "subtitle indonesia",
+    "streaming free",
+    "1080p",
+    "4k",
+    "latest",
+    "hot",
+  ];
+  return [...new Set([...base, ...tags, ...extra])].filter(Boolean).slice(0, 40);
 }
 
 function jsonLdVideo(video, meta, origin, canonicalUrl) {
-    return {
-        "@context": "https://schema.org",
-        "@type": "VideoObject",
-        name: meta?.title || video?.title || "Video",
-        description: meta?.description || `Watch ${meta?.title || video?.title || "video"} online`,
-        thumbnailUrl: [video?.single_img || video?.splash_img || ""].filter(Boolean),
-        uploadDate: video?.uploaded || video?.upload_date || video?.created_at || new Date().toISOString(),
-        duration: video?.length ? `PT${video.length}S` : undefined,
-        contentUrl: canonicalUrl || `${origin}/watch?file_code=${video?.file_code || ""}`,
-        embedUrl: `${origin}/e/${video?.file_code || ""}`,
-        genre: meta?.tags?.slice(0, 5) || [],
-        publisher: {
-            "@type": "Organization",
-            "name": "XStreaming"
-        },
-        interactionStatistic: {
-            "@type": "InteractionCounter",
-            interactionType: {
-                "@type": "WatchAction"
-            },
-            userInteractionCount: parseInt(video?.views || "0", 10) || 0,
-        },
-    };
+  return {
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    name: meta?.title || video?.title || "Video",
+    description: meta?.description || `Watch ${meta?.title || video?.title || "video"} online`,
+    thumbnailUrl: [video?.single_img || video?.splash_img || ""].filter(Boolean),
+    uploadDate: video?.uploaded || video?.upload_date || video?.created_at || new Date().toISOString(),
+    duration: video?.length ? `PT${video.length}S` : undefined,
+    contentUrl: canonicalUrl || `${origin}/watch?file_code=${video?.file_code || ""}`,
+    embedUrl: `${origin}/e/${video?.file_code || ""}`,
+    genre: meta?.tags?.slice(0, 5) || [],
+    publisher: {
+      "@type": "Organization",
+      "name": "XStreaming"
+    },
+    interactionStatistic: {
+      "@type": "InteractionCounter",
+      interactionType: { "@type": "WatchAction" },
+      userInteractionCount: parseInt(video?.views || "0", 10) || 0,
+    },
+  };
 }
 
 async function doodFetch(env, path, params = {}) {
-    const base = env.DOOD_API || "https://doodapi.co";
-    const url = new URL(path, base);
+  const base = env.DOOD_API || "https://doodapi.co";
+  const url = new URL(path, base);
 
-    if (env.DOOD_KEY) url.searchParams.set("key", env.DOOD_KEY);
+  if (env.DOOD_KEY) url.searchParams.set("key", env.DOOD_KEY);
 
-    for (const [k, v] of Object.entries(params)) {
-        if (v !== undefined && v !== null && String(v) !== "") {
-            url.searchParams.set(k, String(v));
-        }
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v) !== "") {
+      url.searchParams.set(k, String(v));
     }
+  }
 
-    const res = await fetch(url.toString(), {
-        headers: {
-            "user-agent": "Mozilla/5.0",
-            accept: "application/json,text/plain,*/*",
-        },
-    });
+  const res = await fetch(url.toString(), {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      accept: "application/json,text/plain,*/*",
+    },
+  });
 
-    const text = await res.text();
-    try {
-        return JSON.parse(text);
-    } catch {
-        return {
-            error: "Invalid JSON from upstream",
-            raw: text,
-            status: res.status
-        };
-    }
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: "Invalid JSON from upstream", raw: text, status: res.status };
+  }
 }
 
 async function doodPost(env, path, body = {}) {
-    const base = env.DOOD_API || "https://doodapi.co";
-    const url = new URL(path, base);
+  const base = env.DOOD_API || "https://doodapi.co";
+  const url = new URL(path, base);
 
-    if (env.DOOD_KEY) url.searchParams.set("key", env.DOOD_KEY);
+  if (env.DOOD_KEY) url.searchParams.set("key", env.DOOD_KEY);
 
-    const res = await fetch(url.toString(), {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            "user-agent": "Mozilla/5.0",
-            accept: "application/json,text/plain,*/*",
-        },
-        body: JSON.stringify(body),
-    });
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "Mozilla/5.0",
+      accept: "application/json,text/plain,*/*",
+    },
+    body: JSON.stringify(body),
+  });
 
-    const text = await res.text();
-    try {
-        return JSON.parse(text);
-    } catch {
-        return {
-            error: "Invalid JSON from upstream",
-            raw: text,
-            status: res.status
-        };
-    }
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: "Invalid JSON from upstream", raw: text, status: res.status };
+  }
 }
 
 async function getMeta(env, fileCode) {
-    if (!env.METADATA || !fileCode) return null;
-    try {
-        return await env.METADATA.get(`meta:${fileCode}`, {
-            type: "json"
-        });
-    } catch {
-        return null;
-    }
+  if (!env.METADATA || !fileCode) return null;
+  try {
+    return await env.METADATA.get(`meta:${fileCode}`, { type: "json" });
+  } catch {
+    return null;
+  }
 }
 
 async function saveMeta(env, fileCode, payload) {
-    if (!env.METADATA || !fileCode) return false;
-    try {
-        await env.METADATA.put(`meta:${fileCode}`, JSON.stringify(payload));
-        return true;
-    } catch {
-        return false;
-    }
+  if (!env.METADATA || !fileCode) return false;
+  try {
+    await env.METADATA.put(`meta:${fileCode}`, JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function getMetaBySlug(env, slug) {
-    if (!env.METADATA || !slug) return null;
-    try {
-        return await env.METADATA.get(`slug:${slug}`, {
-            type: "json"
-        });
-    } catch {
-        return null;
-    }
+  if (!env.METADATA || !slug) return null;
+  try {
+    return await env.METADATA.get(`slug:${slug}`, { type: "json" });
+  } catch {
+    return null;
+  }
 }
 
 async function saveSlugMap(env, slug, fileCode) {
-    if (!env.METADATA || !slug || !fileCode) return false;
-    try {
-        await env.METADATA.put(`slug:${slug}`, JSON.stringify({
-            file_code: fileCode
-        }), {
-            expirationTtl: 60 * 60 * 24 * 365,
-        });
-        return true;
-    } catch {
-        return false;
-    }
+  if (!env.METADATA || !slug || !fileCode) return false;
+  try {
+    await env.METADATA.put(`slug:${slug}`, JSON.stringify({ file_code: fileCode }), {
+      expirationTtl: 60 * 60 * 24 * 365,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function getSearchCache(env, key) {
-    if (!env.METADATA) return null;
-    try {
-        return await env.METADATA.get(key, {
-            type: "json"
-        });
-    } catch {
-        return null;
-    }
+  if (!env.METADATA) return null;
+  try {
+    return await env.METADATA.get(key, { type: "json" });
+  } catch {
+    return null;
+  }
 }
 
 async function setSearchCache(env, key, payload) {
-    if (!env.METADATA) return false;
-    try {
-        await env.METADATA.put(key, JSON.stringify(payload), {
-            expirationTtl: SEARCH_CACHE_TTL,
-        });
-        return true;
-    } catch {
-        return false;
-    }
+  if (!env.METADATA) return false;
+  try {
+    await env.METADATA.put(key, JSON.stringify(payload), {
+      expirationTtl: SEARCH_CACHE_TTL,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function pingIndexNow(origin) {
-    const sitemap = `${origin}/sitemap.xml`;
-    const endpoints = [
-        `https://www.google.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
-        `https://www.bing.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
-    ];
-    await Promise.allSettled(
-        endpoints.map((u) =>
-            fetch(u, {
-                headers: {
-                    "user-agent": "Mozilla/5.0"
-                },
-            })
-        )
-    );
+  const sitemap = `${origin}/sitemap.xml`;
+  const endpoints = [
+    `https://www.google.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
+    `https://www.bing.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
+  ];
+  await Promise.allSettled(
+    endpoints.map((u) =>
+      fetch(u, {
+        headers: { "user-agent": "Mozilla/5.0" },
+      })
+    )
+  );
 }
 
 async function resolveEmbedUrl(env, code) {
-    const fallbackMyVid = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
-    const fallbackDood = `https://dood.wf/e/${encodeURIComponent(code)}`;
+  const fallbackMyVid = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
+  const fallbackDood = `https://dood.wf/e/${encodeURIComponent(code)}`;
 
-    try {
-        const info = await doodFetch(env, "/api/file/info", {
-            file_code: code
-        });
-        const video = info?.result?.[0] || info?.result || {};
+  try {
+    const info = await doodFetch(env, "/api/file/info", { file_code: code });
+    const video = info?.result?.[0] || info?.result || {};
 
-        // Prioritas: embed resmi → dood.wf → myvidplay.com
-        return (
-            video?.protected_embed ||
-            video?.embed_url ||
-            video?.embed ||
-            video?.iframe ||
-            video?.embed_code ||
-            fallbackDood || // ← utama dulu
-            fallbackMyVid // ← cadangan terakhir
-        );
-    } catch {
-        // Kalau API error, coba dood.wf dulu, baru myvidplay
-        return fallbackDood;
-    }
+    // Prioritas: embed resmi → dood.wf → myvidplay.com
+    return (
+      video?.protected_embed ||
+      video?.embed_url ||
+      video?.embed ||
+      video?.iframe ||
+      video?.embed_code ||
+      fallbackDood ||
+      fallbackMyVid
+    );
+  } catch {
+    // Kalau API error, coba dood.wf dulu, baru myvidplay
+    return fallbackDood;
+  }
 }
 
 async function enrichVideos(env, videos = [], folderMap = new Map()) {
-    if (!Array.isArray(videos) || !videos.length) return [];
-    if (!env.METADATA) {
-        return videos.map((v) => ({
-            ...v,
-            __folderName: folderMap.get(String(v.fld_id || "0")) || "",
-            __meta: null,
-        }));
-    }
+  if (!Array.isArray(videos) || !videos.length) return [];
+  if (!env.METADATA) {
+    return videos.map((v) => ({
+      ...v,
+      __folderName: folderMap.get(String(v.fld_id || "0")) || "",
+      __meta: null,
+    }));
+  }
 
-    return Promise.all(
-        videos.map(async (v) => {
-            const meta = await getMeta(env, v.file_code);
-            return {
-                ...v,
-                __meta: meta,
-                __folderName: folderMap.get(String(v.fld_id || "0")) || "",
-            };
-        })
-    );
+  return Promise.all(
+    videos.map(async (v) => {
+      const meta = await getMeta(env, v.file_code);
+      return {
+        ...v,
+        __meta: meta,
+        __folderName: folderMap.get(String(v.fld_id || "0")) || "",
+      };
+    })
+  );
 }
 
 function hotScore(video) {
-    const now = Date.now();
-    const uploadedAt =
-        new Date(
-            video.uploaded ||
-            video.upload_date ||
-            video.created_at ||
-            video.created ||
-            video.date ||
-            now
-        ).getTime() || now;
+  const now = Date.now();
+  const uploadedAt =
+    new Date(
+      video.uploaded ||
+        video.upload_date ||
+        video.created_at ||
+        video.created ||
+        video.date ||
+        now
+    ).getTime() || now;
 
-    const ageHours = Math.max(1, (now - uploadedAt) / 3600000);
-    const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
+  const ageHours = Math.max(1, (now - uploadedAt) / 3600000);
+  const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
 
-    const freshnessBoost = Math.max(0, HOT_LOOKBACK_HOURS - ageHours) / HOT_LOOKBACK_HOURS;
-    const viewsBoost = Math.min(1, Math.log10(views + 1) / 6);
-    const randomBoost = Math.random() * 0.05;
+  const freshnessBoost = Math.max(0, HOT_LOOKBACK_HOURS - ageHours) / HOT_LOOKBACK_HOURS;
+  const viewsBoost = Math.min(1, Math.log10(views + 1) / 6);
+  const randomBoost = Math.random() * 0.05;
 
-    return freshnessBoost * 0.62 + viewsBoost * 0.25 + randomBoost;
+  return freshnessBoost * 0.62 + viewsBoost * 0.25 + randomBoost;
 }
 
 function scoreVideo(query, video) {
-    const q = normalizeText(query);
-    if (!q) return 0;
+  const q = normalizeText(query);
+  if (!q) return 0;
 
-    const meta = video.__meta || {};
-    const folderName = normalizeText(video.__folderName || "");
-    const title = normalizeText(video.title || "");
-    const desc = normalizeText(meta.description || "");
-    const tags = normalizeText(Array.isArray(meta.tags) ? meta.tags.join(" ") : meta.tags || "");
-    const code = normalizeText(video.file_code || "");
-    const blob = [title, folderName, tags, desc, code].filter(Boolean).join(" ");
+  const meta = video.__meta || {};
+  const folderName = normalizeText(video.__folderName || "");
+  const title = normalizeText(video.title || "");
+  const desc = normalizeText(meta.description || "");
+  const tags = normalizeText(Array.isArray(meta.tags) ? meta.tags.join(" ") : meta.tags || "");
+  const code = normalizeText(video.file_code || "");
+  const blob = [title, folderName, tags, desc, code].filter(Boolean).join(" ");
 
-    if (!blob) return 0;
+  if (!blob) return 0;
 
-    let score = 0;
+  let score = 0;
 
-    if (title === q) score += 1.4;
-    if (title.includes(q)) score += 0.65;
-    if (tags && tags.includes(q)) score += 0.38;
-    if (folderName && folderName.includes(q)) score += 0.26;
-    if (desc && desc.includes(q)) score += 0.12;
-    if (blob === q) score += 0.9;
+  if (title === q) score += 1.4;
+  if (title.includes(q)) score += 0.65;
+  if (tags && tags.includes(q)) score += 0.38;
+  if (folderName && folderName.includes(q)) score += 0.26;
+  if (desc && desc.includes(q)) score += 0.12;
+  if (blob === q) score += 0.9;
 
-    const qTokens = q.split(" ").filter(Boolean);
-    const titleTokens = new Set(title.split(" ").filter(Boolean));
-    const folderTokens = new Set(folderName.split(" ").filter(Boolean));
-    const tagTokens = new Set(tags.split(" ").filter(Boolean));
-    const descTokens = new Set(desc.split(" ").filter(Boolean));
-    const blobTokens = new Set(blob.split(" ").filter(Boolean));
+  const qTokens = q.split(" ").filter(Boolean);
+  const titleTokens = new Set(title.split(" ").filter(Boolean));
+  const folderTokens = new Set(folderName.split(" ").filter(Boolean));
+  const tagTokens = new Set(tags.split(" ").filter(Boolean));
+  const descTokens = new Set(desc.split(" ").filter(Boolean));
+  const blobTokens = new Set(blob.split(" ").filter(Boolean));
 
-    let hitTitle = 0;
-    let hitFolder = 0;
-    let hitTags = 0;
-    let hitDesc = 0;
-    let hitAny = 0;
+  let hitTitle = 0;
+  let hitFolder = 0;
+  let hitTags = 0;
+  let hitDesc = 0;
+  let hitAny = 0;
 
-    for (const t of qTokens) {
-        if (titleTokens.has(t)) hitTitle++;
-        if (folderTokens.has(t)) hitFolder++;
-        if (tagTokens.has(t)) hitTags++;
-        if (descTokens.has(t)) hitDesc++;
-        if (blobTokens.has(t)) hitAny++;
-    }
+  for (const t of qTokens) {
+    if (titleTokens.has(t)) hitTitle++;
+    if (folderTokens.has(t)) hitFolder++;
+    if (tagTokens.has(t)) hitTags++;
+    if (descTokens.has(t)) hitDesc++;
+    if (blobTokens.has(t)) hitAny++;
+  }
 
-    if (qTokens.length) {
-        score += (hitTitle / qTokens.length) * 0.38;
-        score += (hitTags / qTokens.length) * 0.25;
-        score += (hitFolder / qTokens.length) * 0.14;
-        score += (hitDesc / qTokens.length) * 0.07;
-        score += (hitAny / qTokens.length) * 0.08;
-    }
+  if (qTokens.length) {
+    score += (hitTitle / qTokens.length) * 0.38;
+    score += (hitTags / qTokens.length) * 0.25;
+    score += (hitFolder / qTokens.length) * 0.14;
+    score += (hitDesc / qTokens.length) * 0.07;
+    score += (hitAny / qTokens.length) * 0.08;
+  }
 
-    const simTitle = similarity(q, title);
-    const simBlob = similarity(q, blob);
-    score += simTitle * 0.35;
-    score += simBlob * 0.08;
+  const simTitle = similarity(q, title);
+  const simBlob = similarity(q, blob);
+  score += simTitle * 0.35;
+  score += simBlob * 0.08;
 
-    const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
-    const popularity = Math.min(1, Math.log10(views + 1) / 6);
-    score += popularity * 0.03;
+  const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
+  const popularity = Math.min(1, Math.log10(views + 1) / 6);
+  score += popularity * 0.03;
 
-    return Math.min(1.8, score);
+  return Math.min(1.8, score);
 }
 
 async function buildRecommendations(env, currentVideo, limit = 18) {
-    const pages = [1, 2, 3];
+  const pages = [1, 2, 3];
 
-    const [foldersRes, ...listPages] = await Promise.all([
-        doodFetch(env, "/api/folder/list", {
-            only_folders: "1"
-        }),
-        ...pages.map((page) =>
-            doodFetch(env, "/api/file/list", {
-                page: String(page),
-                per_page: "100",
-            })
-        ),
-    ]);
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map((page) =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: "100",
+      })
+    ),
+  ]);
 
-    const folders = asArray(extractFolders(foldersRes));
-    const folderMap = new Map();
-    folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+  const folders = asArray(extractFolders(foldersRes));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
 
-    const files = dedupeByFileCode(listPages.flatMap(extractFiles));
-    const enriched = await enrichVideos(env, files, folderMap);
+  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, files, folderMap);
 
-    const currentTitle = currentVideo?.title || "";
-    const currentFolder = String(currentVideo?.fld_id || "0");
-    const currentTags = Array.isArray(currentVideo?.__meta?.tags) ? currentVideo.__meta.tags : [];
+  const currentTitle = currentVideo?.title || "";
+  const currentFolder = String(currentVideo?.fld_id || "0");
+  const currentTags = Array.isArray(currentVideo?.__meta?.tags) ? currentVideo.__meta.tags : [];
 
-    const ranked = enriched
-        .filter((v) => String(v.file_code || "") !== String(currentVideo.file_code || ""))
-        .map((v) => {
-            let score = 0;
-            score += scoreVideo(currentTitle, v) * 0.58;
+  const ranked = enriched
+    .filter((v) => String(v.file_code || "") !== String(currentVideo.file_code || ""))
+    .map((v) => {
+      let score = 0;
+      score += scoreVideo(currentTitle, v) * 0.58;
 
-            if (String(v.fld_id || "0") === currentFolder) score += 0.2;
+      if (String(v.fld_id || "0") === currentFolder) score += 0.2;
 
-            const tags = Array.isArray(v.__meta?.tags) ? v.__meta.tags : [];
-            const overlap = tags.filter((t) => currentTags.includes(t)).length;
-            score += overlap * 0.16;
+      const tags = Array.isArray(v.__meta?.tags) ? v.__meta.tags : [];
+      const overlap = tags.filter((t) => currentTags.includes(t)).length;
+      score += overlap * 0.16;
 
-            score += hotScore(v);
+      score += hotScore(v);
 
-            return {
-                video: v,
-                score
-            };
-        })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit)
-        .map((x) => x.video);
+      return { video: v, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.video);
 
-    return ranked;
+  return ranked;
 }
 
 async function buildTrending(env, limit = 36) {
-    const pages = [1, 2, 3, 4, 5];
+  const pages = [1, 2, 3, 4, 5];
 
-    const [foldersRes, ...listPages] = await Promise.all([
-        doodFetch(env, "/api/folder/list", {
-            only_folders: "1"
-        }),
-        ...pages.map((page) =>
-            doodFetch(env, "/api/file/list", {
-                page: String(page),
-                per_page: "100",
-            })
-        ),
-    ]);
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map((page) =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: "100",
+      })
+    ),
+  ]);
 
-    const folders = asArray(extractFolders(foldersRes));
-    const folderMap = new Map();
-    folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+  const folders = asArray(extractFolders(foldersRes));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
 
-    const files = dedupeByFileCode(listPages.flatMap(extractFiles));
-    const enriched = await enrichVideos(env, files, folderMap);
+  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, files, folderMap);
 
-    return [...enriched]
-        .sort((a, b) => {
-            const sa = hotScore(a);
-            const sb = hotScore(b);
-            if (sb !== sa) return sb - sa;
-            return (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0);
-        })
-        .slice(0, limit);
+  return [...enriched]
+    .sort((a, b) => {
+      const sa = hotScore(a);
+      const sb = hotScore(b);
+      if (sb !== sa) return sb - sa;
+      return (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0);
+    })
+    .slice(0, limit);
 }
 
 async function buildSmartSearch(env, query) {
-    const q = String(query || "").trim();
-    const normalized = normalizeText(q);
+  const q = String(query || "").trim();
+  const normalized = normalizeText(q);
 
-    const cacheKey = `search:${encodeURIComponent(normalized || q).slice(0, 120)}:v5`;
-    const cached = await getSearchCache(env, cacheKey);
-    if (cached && Array.isArray(cached.results)) return cached;
+  const cacheKey = `search:${encodeURIComponent(normalized || q).slice(0, 120)}:v5`;
+  const cached = await getSearchCache(env, cacheKey);
+  if (cached && Array.isArray(cached.results)) return cached;
 
-    const pages = Array.from({
-        length: SEARCH_MAX_PAGES
-    }, (_, i) => i + 1);
+  const pages = Array.from({ length: SEARCH_MAX_PAGES }, (_, i) => i + 1);
 
-    const [foldersRes, ...listPages] = await Promise.all([
-        doodFetch(env, "/api/folder/list", {
-            only_folders: "1"
-        }),
-        ...pages.map((page) =>
-            doodFetch(env, "/api/file/list", {
-                page: String(page),
-                per_page: String(SEARCH_PER_PAGE),
-            })
-        ),
-    ]);
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map((page) =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: String(SEARCH_PER_PAGE),
+      })
+    ),
+  ]);
 
-    const folders = asArray(extractFolders(foldersRes));
-    const folderMap = new Map();
-    folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+  const folders = asArray(extractFolders(foldersRes));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
 
-    const allFiles = dedupeByFileCode(listPages.flatMap(extractFiles));
-    const enriched = await enrichVideos(env, allFiles, folderMap);
+  const allFiles = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, allFiles, folderMap);
 
-    const ranked = enriched
-        .map((v) => ({
-            v,
-            score: scoreVideo(q, v)
-        }))
-        .filter((x) => x.score > 0.18)
-        .sort((a, b) => b.score - a.score)
-        .map((x) => x.v)
-        .slice(0, SEARCH_RESULT_LIMIT);
+  const ranked = enriched
+    .map((v) => ({ v, score: scoreVideo(q, v) }))
+    .filter((x) => x.score > 0.18)
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.v)
+    .slice(0, SEARCH_RESULT_LIMIT);
 
-    const allTags = [...new Set(
-        ranked.flatMap((v) => (Array.isArray(v.__meta?.tags) ? v.__meta.tags : []))
-    )];
+  const allTags = [...new Set(
+    ranked.flatMap((v) => (Array.isArray(v.__meta?.tags) ? v.__meta.tags : []))
+  )];
 
-    const payload = {
-        q,
-        totalCorpus: enriched.length,
-        total: ranked.length,
-        allTags,
-        results: ranked,
-        created_at: new Date().toISOString(),
-    };
+  const payload = {
+    q,
+    totalCorpus: enriched.length,
+    total: ranked.length,
+    allTags,
+    results: ranked,
+    created_at: new Date().toISOString(),
+  };
 
-    await setSearchCache(env, cacheKey, payload);
-    return payload;
+  await setSearchCache(env, cacheKey, payload);
+  return payload;
 }
 
 function videoCard(v, query = "") {
-    const tags = v.__meta?.tags || [];
-    return `
+  const tags = v.__meta?.tags || [];
+  return `
     <div class="video-card" onclick="location.href='/watch?file_code=${encodeURIComponent(v.file_code || "")}'">
       <img src="${escapeHtml(v.single_img || v.splash_img || "")}" onerror="this.src='https://picsum.photos/200/130'">
       <div class="title">${highlightHtml(v.title || "Untitled", query)}</div>
@@ -775,7 +734,7 @@ a{color:inherit;text-decoration:none}
 `;
 
 function baseHtml(title, body, extraHead = "") {
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
@@ -847,7 +806,7 @@ function baseHtml(title, body, extraHead = "") {
 }
 
 async function uploadFormsHtml() {
-    return `
+  return `
   <section class="uploader" id="upload-section">
     <div class="wrap">
       <h2 style="text-align:center;margin:1rem 0 0">📤 Video Management</h2>
@@ -1013,64 +972,60 @@ async function uploadFormsHtml() {
 }
 
 async function uploadPage() {
-    return htmlResponse(
-        baseHtml(
-            "Upload Video",
-            `${await uploadFormsHtml()}`,
-            `<meta name="robots" content="noindex,nofollow">`
-        )
-    );
+  return htmlResponse(
+    baseHtml(
+      "Upload Video",
+      `${await uploadFormsHtml()}`,
+      `<meta name="robots" content="noindex,nofollow">`
+    )
+  );
 }
 
 async function homePage(req, env) {
-    const url = new URL(req.url);
-    const page = parseInt(url.searchParams.get("page") || "1", 10);
-    const category = url.searchParams.get("category") || "all";
-    const perPage = 24;
+  const url = new URL(req.url);
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const category = url.searchParams.get("category") || "all";
+  const perPage = 24;
 
-    const [foldersRes, filesRes] = await Promise.all([
-        doodFetch(env, "/api/folder/list", {
-            only_folders: "1"
-        }),
-        doodFetch(env, "/api/file/list", {
-            page: String(page),
-            per_page: String(perPage),
-            ...(category !== "all" ? {
-                fld_id: category
-            } : {}),
-        }),
-    ]);
+  const [foldersRes, filesRes] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    doodFetch(env, "/api/file/list", {
+      page: String(page),
+      per_page: String(perPage),
+      ...(category !== "all" ? { fld_id: category } : {}),
+    }),
+  ]);
 
-    const folders = asArray(extractFolders(foldersRes));
-    const files = extractFiles(filesRes);
-    const totalPages = parseInt(filesRes?.result?.total_pages || filesRes?.total_pages || "1", 10) || 1;
+  const folders = asArray(extractFolders(foldersRes));
+  const files = extractFiles(filesRes);
+  const totalPages = parseInt(filesRes?.result?.total_pages || filesRes?.total_pages || "1", 10) || 1;
 
-    const folderMap = new Map();
-    folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
 
-    const enriched = await enrichVideos(env, files, folderMap);
-    const byViews = [...asArray(enriched)].sort(
-        (a, b) => (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0)
-    );
-    const heroVideo = byViews[0];
-    const trending = byViews.slice(0, 10);
+  const enriched = await enrichVideos(env, files, folderMap);
+  const byViews = [...asArray(enriched)].sort(
+    (a, b) => (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0)
+  );
+  const heroVideo = byViews[0];
+  const trending = byViews.slice(0, 10);
 
-    const categorized = new Map();
-    enriched.forEach((v) => {
-        const fid = String(v.fld_id || "0");
-        const name = folderMap.get(fid) || (fid === "0" ? "Uncategorized" : "Unknown");
-        if (!categorized.has(name)) categorized.set(name, []);
-        categorized.get(name).push(v);
-    });
+  const categorized = new Map();
+  enriched.forEach((v) => {
+    const fid = String(v.fld_id || "0");
+    const name = folderMap.get(fid) || (fid === "0" ? "Uncategorized" : "Unknown");
+    if (!categorized.has(name)) categorized.set(name, []);
+    categorized.get(name).push(v);
+  });
 
-    let rows = "";
-    for (const [catName, vids] of categorized) {
-        const cards = vids.slice(0, 15).map((v) => videoCard(v)).join("");
-        rows += `<div class="row-container"><h2>📁 ${escapeHtml(catName)}</h2><div class="scroll-row">${cards}</div></div>`;
-    }
+  let rows = "";
+  for (const [catName, vids] of categorized) {
+    const cards = vids.slice(0, 15).map((v) => videoCard(v)).join("");
+    rows += `<div class="row-container"><h2>📁 ${escapeHtml(catName)}</h2><div class="scroll-row">${cards}</div></div>`;
+  }
 
-    const heroHtml = heroVideo ?
-        `
+  const heroHtml = heroVideo
+    ? `
     <div class="hero" style="background-image:url(${escapeHtml(heroVideo.single_img || heroVideo.splash_img || "")})">
       <div class="hero-content">
         <h1>${escapeHtml(heroVideo.title || "Untitled")}</h1>
@@ -1078,90 +1033,90 @@ async function homePage(req, env) {
         <button onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">▶ Play</button>
         <button class="secondary" onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">ℹ Info</button>
       </div>
-    </div>` :
-        "";
+    </div>`
+    : "";
 
-    const trendingCards = trending.map((v) => videoCard(v)).join("");
+  const trendingCards = trending.map((v) => videoCard(v)).join("");
 
-    const paginationHtml = totalPages > 1 ?
-        `<div class="pagination">
+  const paginationHtml = totalPages > 1
+    ? `<div class="pagination">
       ${page > 1 ? `<button onclick="location.href='?page=${page - 1}&category=${encodeURIComponent(category)}'">‹ Prev</button>` : ""}
       <span>${page} / ${totalPages}</span>
       ${page < totalPages ? `<button onclick="location.href='?page=${page + 1}&category=${encodeURIComponent(category)}'">Next ›</button>` : ""}
-    </div>` :
-        "";
+    </div>`
+    : "";
 
-    return htmlResponse(
-        baseHtml(
-            "XStreaming · Home",
-            `
+  return htmlResponse(
+    baseHtml(
+      "XStreaming · Home",
+      `
       ${heroHtml}
       <div class="row-container"><h2>🔥 Trending Now</h2><div class="scroll-row">${trendingCards}</div></div>
       ${rows}
       ${paginationHtml}
     `,
-            `
+      `
       <meta name="description" content="XStreaming home">
       <meta name="robots" content="index,follow">
     `
-        )
-    );
+    )
+  );
 }
 
 async function searchPage(req, env) {
-    const url = new URL(req.url);
-    const q = url.searchParams.get("q") || "";
-    const page = parseInt(url.searchParams.get("page") || "1", 10);
-    const perPage = 24;
+  const url = new URL(req.url);
+  const q = url.searchParams.get("q") || "";
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const perPage = 24;
 
-    if (!q.trim()) {
-        return htmlResponse(
-            baseHtml(
-                "Search",
-                `
+  if (!q.trim()) {
+    return htmlResponse(
+      baseHtml(
+        "Search",
+        `
         <div style="padding:2rem">
           <h2>Masukkan kata pencarian</h2>
           <p class="muted">Contoh: anime, action, music, tutorial, vlog</p>
         </div>
       `,
-                `<meta name="robots" content="noindex,nofollow">`
-            )
-        );
-    }
+        `<meta name="robots" content="noindex,nofollow">`
+      )
+    );
+  }
 
-    const data = await buildSmartSearch(env, q);
-    const results = data.results || [];
-    const total = data.total || 0;
-    const allTags = data.allTags || [];
+  const data = await buildSmartSearch(env, q);
+  const results = data.results || [];
+  const total = data.total || 0;
+  const allTags = data.allTags || [];
 
-    const pageCount = Math.max(1, Math.ceil(total / perPage));
-    const pageResults = results.slice((page - 1) * perPage, page * perPage);
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  const pageResults = results.slice((page - 1) * perPage, page * perPage);
 
-    const grid = pageResults.length ?
-        pageResults.map((v) => videoCard(v, q)).join("") :
-        `<p style="padding:2rem;color:var(--muted)">Tidak ada hasil yang mendekati "${escapeHtml(q)}"</p>`;
+  const grid = pageResults.length
+    ? pageResults.map((v) => videoCard(v, q)).join("")
+    : `<p style="padding:2rem;color:var(--muted)">Tidak ada hasil yang mendekati "${escapeHtml(q)}"</p>`;
 
-    const paginationHtml = total > perPage ?
-        `
+  const paginationHtml = total > perPage
+    ? `
     <div class="pagination">
       ${page > 1 ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page - 1}'">‹ Prev</button>` : ""}
       <span>${page} / ${pageCount}</span>
       ${page < pageCount ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page + 1}'">Next ›</button>` : ""}
     </div>
-  ` :
-        "";
+  `
+    : "";
 
-    const extraHead = `
+  const extraHead = `
     <meta name="description" content="Hasil pencarian video untuk ${escapeHtml(q)} di XStreaming">
     <meta name="keywords" content="${escapeHtml([q, ...allTags].filter(Boolean).join(", "))}">
     <meta name="robots" content="index,follow">
     <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
   `;
 
-    return htmlResponse(
-        baseHtml(
-            `Search: ${escapeHtml(q)}`,
-            `
+  return htmlResponse(
+    baseHtml(
+      `Search: ${escapeHtml(q)}`,
+      `
       <div style="padding:2rem 2rem 0">
         <h2 style="margin-bottom:.4rem">Hasil untuk "${escapeHtml(q)}"</h2>
         <p class="muted">${total} video yang mirip ditemukan dari ${data.totalCorpus || 0} data</p>
@@ -1172,98 +1127,92 @@ async function searchPage(req, env) {
       <div class="search-grid">${grid}</div>
       ${paginationHtml}
     `,
-            extraHead
-        )
-    );
+      extraHead
+    )
+  );
 }
 
 async function trendingPage(req, env) {
-    const videos = await buildTrending(env, 72);
-    const cards = videos.map((v) => videoCard(v)).join("");
-    return htmlResponse(
-        baseHtml(
-            "Trending Videos",
-            `
+  const videos = await buildTrending(env, 72);
+  const cards = videos.map((v) => videoCard(v)).join("");
+  return htmlResponse(
+    baseHtml(
+      "Trending Videos",
+      `
       <div style="padding:2rem 2rem 0">
         <h1>Trending Videos</h1>
         <p class="muted">Video paling baru dan paling hot.</p>
       </div>
       <div class="search-grid">${cards}</div>
     `,
-            `<meta name="description" content="Trending videos on XStreaming"><meta name="robots" content="index,follow">`
-        )
-    );
+      `<meta name="description" content="Trending videos on XStreaming"><meta name="robots" content="index,follow">`
+    )
+  );
 }
 
 async function tagPage(req, env) {
-    const url = new URL(req.url);
-    const tag = decodeURIComponent(url.pathname.replace("/tag/", "")).trim();
-    if (!tag) return new Response("Not found", {
-        status: 404
-    });
+  const url = new URL(req.url);
+  const tag = decodeURIComponent(url.pathname.replace("/tag/", "")).trim();
+  if (!tag) return new Response("Not found", { status: 404 });
 
-    const data = await buildSmartSearch(env, tag);
-    const cards = (data.results || []).map((v) => videoCard(v, tag)).join("");
+  const data = await buildSmartSearch(env, tag);
+  const cards = (data.results || []).map((v) => videoCard(v, tag)).join("");
 
-    return htmlResponse(
-        baseHtml(
-            `${escapeHtml(tag)} Videos`,
-            `
+  return htmlResponse(
+    baseHtml(
+      `${escapeHtml(tag)} Videos`,
+      `
       <div style="padding:2rem 2rem 0">
         <h1>${escapeHtml(tag)} Videos</h1>
         <p class="muted">Watch ${escapeHtml(tag)} videos online free HD streaming.</p>
       </div>
       <div class="search-grid">${cards}</div>
     `,
-            `
+      `
       <meta name="description" content="Watch ${escapeHtml(tag)} videos online free HD streaming">
       <meta name="keywords" content="${escapeHtml(tag)}, streaming, hd, watch online">
       <meta name="robots" content="index,follow">
     `
-        )
-    );
+    )
+  );
 }
 
 async function watchPage(req, env, fileCodeOverride = "", canonicalPathOverride = "") {
-    const url = new URL(req.url);
-    const code = fileCodeOverride || url.searchParams.get("file_code");
-    if (!code) return new Response("Missing file_code", {
-        status: 400
-    });
+  const url = new URL(req.url);
+  const code = fileCodeOverride || url.searchParams.get("file_code");
+  if (!code) return new Response("Missing file_code", { status: 400 });
 
-    const info = await doodFetch(env, "/api/file/info", {
-        file_code: code
-    });
-    const video = info?.result?.[0] || info?.result || null;
+  const info = await doodFetch(env, "/api/file/info", { file_code: code });
+  const video = info?.result?.[0] || info?.result || null;
 
-    if (!video) {
-        return htmlResponse(
-            baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
-            404
-        );
-    }
+  if (!video) {
+    return htmlResponse(
+      baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
+      404
+    );
+  }
 
-    const meta = await getMeta(env, code);
-    video.__meta = meta || {};
+  const meta = await getMeta(env, code);
+  video.__meta = meta || {};
 
-    const embedUrl =
-        video?.protected_embed ||
-        video?.embed_url ||
-        video?.embed ||
-        (await resolveEmbedUrl(env, code));
+  const embedUrl =
+    video?.protected_embed ||
+    video?.embed_url ||
+    video?.embed ||
+    (await resolveEmbedUrl(env, code));
 
-    const title = meta?.title || video.title || "Video";
-    const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
-    const tags = Array.isArray(meta?.tags) ? meta.tags : [];
-    const origin = url.origin;
+  const title = meta?.title || video.title || "Video";
+  const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
+  const tags = Array.isArray(meta?.tags) ? meta.tags : [];
+  const origin = url.origin;
 
-    const canonicalUrl = canonicalPathOverride ?
-        `${origin}${canonicalPathOverride}` :
-        meta?.slug ?
-        `${origin}/video/${meta.slug}` :
-        `${origin}/watch?file_code=${encodeURIComponent(code)}`;
+  const canonicalUrl = canonicalPathOverride
+    ? `${origin}${canonicalPathOverride}`
+    : meta?.slug
+      ? `${origin}/video/${meta.slug}`
+      : `${origin}/watch?file_code=${encodeURIComponent(code)}`;
 
-    const extraHead = `
+  const extraHead = `
     <meta name="description" content="${escapeHtml(description)}">
     <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
@@ -1283,34 +1232,34 @@ async function watchPage(req, env, fileCodeOverride = "", canonicalPathOverride 
     <script type="application/ld+json">${JSON.stringify(jsonLdVideo(video, meta, origin, canonicalUrl))}</script>
   `;
 
-    const bot = isBot(req.headers.get("user-agent") || "");
-    const recommendations = await buildRecommendations(env, video, 18);
-    const recommendationHtml = recommendations.length ?
-        `
+  const bot = isBot(req.headers.get("user-agent") || "");
+  const recommendations = await buildRecommendations(env, video, 18);
+  const recommendationHtml = recommendations.length
+    ? `
       <div class="row-container">
         <h2>🔥 Recommended For You</h2>
         <div class="scroll-row">
           ${recommendations.map((v) => videoCard(v, title)).join("")}
         </div>
       </div>
-    ` :
-        "";
+    `
+    : "";
 
-    const exploreKeywords = relatedKeywords(tags, title);
-    const exploreHtml = exploreKeywords.length ?
-        `
+  const exploreKeywords = relatedKeywords(tags, title);
+  const exploreHtml = exploreKeywords.length
+    ? `
       <div class="row-container">
         <h2>🧭 Explore More</h2>
         <div class="tag-cloud">
           ${exploreKeywords.map((k) => `<a class="tag-chip" href="/tag/${encodeURIComponent(k)}">${escapeHtml(k)}</a>`).join("")}
         </div>
       </div>
-    ` :
-        "";
+    `
+    : "";
 
-    if (bot) {
-        return htmlResponse(
-            `<!DOCTYPE html>
+  if (bot) {
+    return htmlResponse(
+      `<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
@@ -1326,13 +1275,13 @@ async function watchPage(req, env, fileCodeOverride = "", canonicalPathOverride 
   <p>${escapeHtml(embedUrl)}</p>
 </body>
 </html>`
-        );
-    }
+    );
+  }
 
-    return htmlResponse(
-        baseHtml(
-            title,
-            `
+  return htmlResponse(
+    baseHtml(
+      title,
+      `
       <div class="watch-container">
         <div class="player-wrap">
           <iframe
@@ -1354,23 +1303,35 @@ async function watchPage(req, env, fileCodeOverride = "", canonicalPathOverride 
         ${exploreHtml}
       </div>
     `,
-            extraHead
-        )
-    );
+      extraHead
+    )
+  );
 }
 
-function embedPage(path) {
-    const code = path.split("/").pop();
-    if (!code) return new Response("Invalid", {
-        status: 400
-    });
+async function embedPage(req, env, path) {
+  const code = path.split("/").pop();
+  if (!code) return new Response("Invalid", { status: 400 });
 
-    return htmlResponse(
-        `<!DOCTYPE html>
-<html lang="id">
+  // Gunakan resolveEmbedUrl untuk mendapatkan URL terbaik
+  let embedUrl;
+  try {
+    embedUrl = await resolveEmbedUrl(env, code);
+  } catch {
+    embedUrl = "";
+  }
+
+  // Fallback keras kalau kosong
+  if (!embedUrl || embedUrl.trim() === "") {
+    embedUrl = `https://dood.wf/e/${encodeURIComponent(code)}`;
+  }
+
+  return htmlResponse(
+    `<!DOCTYPE html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
   <title>Embed</title>
   <style>
     html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}
@@ -1378,374 +1339,341 @@ function embedPage(path) {
   </style>
 </head>
 <body>
-  <iframe src="https://myvidplay.com/e/${encodeURIComponent(code)}" scrolling="no" frameborder="0" allowfullscreen="true"></iframe>
+  <iframe src="${escapeHtml(embedUrl)}" scrolling="no" frameborder="0" allowfullscreen="true"></iframe>
 </body>
-</html>`
-    );
+</html>`,
+    200,
+    { "x-robots-tag": "noindex, nofollow" }
+  );
 }
 
 async function sitemapPage(env, origin) {
-    if (!env.METADATA) {
-        return new Response("", {
-            status: 404
-        });
+  if (!env.METADATA) {
+    return new Response("", { status: 404 });
+  }
+
+  const list = await env.METADATA.list({ prefix: "slug:" });
+  let urls = "";
+
+  for (const key of list.keys) {
+    const slug = key.name.replace("slug:", "");
+    const data = await env.METADATA.get(key.name, { type: "json" });
+    if (data?.file_code) {
+      urls += `<url><loc>${origin}/video/${slug}</loc></url>`;
     }
+  }
 
-    const list = await env.METADATA.list({
-        prefix: "slug:"
-    });
-    let urls = "";
+  const staticTags = ["anime", "action", "drama", "comedy", "music", "sports", "viral", "education", "trending", "hot"];
+  for (const t of staticTags) {
+    urls += `<url><loc>${origin}/tag/${encodeURIComponent(t)}</loc></url>`;
+  }
 
-    for (const key of list.keys) {
-        const slug = key.name.replace("slug:", "");
-        const data = await env.METADATA.get(key.name, {
-            type: "json"
-        });
-        if (data?.file_code) {
-            urls += `<url><loc>${origin}/video/${slug}</loc></url>`;
-        }
-    }
+  urls += `<url><loc>${origin}/trending</loc></url>`;
+  urls += `<url><loc>${origin}/search</loc></url>`;
 
-    const staticTags = ["anime", "action", "drama", "comedy", "music", "sports", "viral", "education", "trending", "hot"];
-    for (const t of staticTags) {
-        urls += `<url><loc>${origin}/tag/${encodeURIComponent(t)}</loc></url>`;
-    }
-
-    urls += `<url><loc>${origin}/trending</loc></url>`;
-    urls += `<url><loc>${origin}/search</loc></url>`;
-
-    const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
-    return new Response(xml, {
-        headers: {
-            "content-type": "application/xml; charset=utf-8"
-        }
-    });
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
+  return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8" } });
 }
 
 async function handleApi(req, env, ctx) {
-    const url = new URL(req.url);
-    const path = url.pathname;
+  const url = new URL(req.url);
+  const path = url.pathname;
 
-    try {
-        if (path === "/api/files") {
-            const data = await doodFetch(env, "/api/file/list", {
-                page: url.searchParams.get("page") || "1",
-                per_page: url.searchParams.get("per_page") || "50",
-                fld_id: url.searchParams.get("fld_id") || "",
-                created: url.searchParams.get("created") || "",
-            });
-            return json(data);
-        }
-
-        if (path === "/api/file/info") {
-            const code = url.searchParams.get("file_code");
-            if (!code) throw new Error("file_code required");
-            const data = await doodFetch(env, "/api/file/info", {
-                file_code: code
-            });
-            return json(data);
-        }
-
-        if (path === "/api/file/check") {
-            const code = url.searchParams.get("file_code");
-            if (!code) throw new Error("file_code required");
-            const data = await doodFetch(env, "/api/file/check", {
-                file_code: code
-            });
-            return json(data);
-        }
-
-        if (path === "/api/search") {
-            const q = url.searchParams.get("q") || "";
-            if (!q.trim()) return json({
-                q,
-                total: 0,
-                results: []
-            });
-
-            const data = await buildSmartSearch(env, q);
-            return json({
-                q: data.q,
-                total: data.total,
-                totalCorpus: data.totalCorpus,
-                allTags: data.allTags,
-                results: data.results,
-            });
-        }
-
-        if (path === "/api/folders") {
-            const data = await doodFetch(env, "/api/folder/list", {
-                only_folders: "1"
-            });
-            return json(data);
-        }
-
-        if (path === "/api/upload/url" && req.method === "POST") {
-            const body = await req.json();
-            if (!body.url) throw new Error("url required");
-
-            const data = await doodFetch(env, "/api/upload/url", {
-                url: body.url,
-                fld_id: body.fld_id || "0",
-                new_title: body.new_title || body.title || "",
-            });
-
-            const fileCode = extractFileCodeFromUploadResponse(data);
-            const tags = parseTags(body.tags || "");
-
-            if (fileCode) {
-                const folderId = String(body.fld_id || "0");
-                const meta = {
-                    title: body.new_title || body.title || "",
-                    description: body.description || "",
-                    tags,
-                    folder_id: folderId,
-                    folder_name: body.folder_name || "",
-                    source: "url",
-                    created_at: new Date().toISOString(),
-                    slug: slugify(body.new_title || body.title || fileCode),
-                };
-                await saveMeta(env, fileCode, meta);
-                await saveSlugMap(env, meta.slug, fileCode);
-            }
-
-            if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
-
-            return json({
-                ok: true,
-                result: data,
-                file_code: fileCode || null
-            });
-        }
-
-        if (path === "/api/upload/server") {
-            const data = await doodFetch(env, "/api/upload/server");
-            return json(data);
-        }
-
-        if (path === "/api/upload/file" && req.method === "POST") {
-            const form = await req.formData();
-            const file = form.get("file");
-
-            if (!file) {
-                return json({
-                    error: "file required"
-                }, 400);
-            }
-
-            const fld_id = form.get("fld_id") || "0";
-            const new_title = form.get("new_title") || "";
-            const tags = parseTags(form.get("tags") || "");
-            const description = String(form.get("description") || "");
-            const folder_name = String(form.get("folder_name") || "");
-
-            const serverRes = await doodFetch(env, "/api/upload/server");
-            const uploadUrl = pickUploadUrl(serverRes);
-
-            if (!uploadUrl) {
-                return json({
-                        error: "Could not get upload server",
-                        debug: serverRes,
-                    },
-                    500
-                );
-            }
-
-            const doodForm = new FormData();
-            if (env.DOOD_KEY) doodForm.append("api_key", env.DOOD_KEY);
-            doodForm.append("file", file, file.name || "upload.mp4");
-            doodForm.append("fld_id", fld_id);
-            if (new_title) doodForm.append("file_title", new_title);
-
-            const uploadRes = await fetch(uploadUrl, {
-                method: "POST",
-                body: doodForm,
-            });
-
-            const text = await uploadRes.text();
-            let uploadData;
-            try {
-                uploadData = JSON.parse(text);
-            } catch {
-                uploadData = {
-                    error: "Upload response not JSON",
-                    raw: text.slice(0, 1000),
-                    status: uploadRes.status,
-                };
-            }
-
-            if (!uploadRes.ok) {
-                return json({
-                        error: "Upload failed",
-                        upstream: uploadData,
-                        status: uploadRes.status,
-                    },
-                    500
-                );
-            }
-
-            const fileCode = extractFileCodeFromUploadResponse(uploadData);
-
-            if (fileCode) {
-                const meta = {
-                    title: new_title || uploadData?.title || file.name || "",
-                    description,
-                    tags,
-                    folder_id: String(fld_id || "0"),
-                    folder_name,
-                    source: "file",
-                    filename: file.name || "",
-                    created_at: new Date().toISOString(),
-                    slug: slugify(new_title || file.name || fileCode),
-                };
-                await saveMeta(env, fileCode, meta);
-                await saveSlugMap(env, meta.slug, fileCode);
-            }
-
-            if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
-
-            return json({
-                ok: true,
-                result: uploadData,
-                file_code: fileCode || null,
-            });
-        }
-
-        if (path === "/api/upload/list") {
-            const data = await doodFetch(env, "/api/urlupload/list");
-            return json(data);
-        }
-
-        if (path === "/api/upload/status") {
-            const code = url.searchParams.get("file_code");
-            if (!code) throw new Error("file_code required");
-            const data = await doodFetch(env, "/api/urlupload/status", {
-                file_code: code
-            });
-            return json(data);
-        }
-
-        if (path === "/api/folder/create" && req.method === "POST") {
-            const body = await req.json();
-            if (!body.name) throw new Error("name required");
-            const data = await doodFetch(env, "/api/folder/create", {
-                name: body.name,
-                parent_id: body.parent_id || "0",
-            });
-            return json(data);
-        }
-
-        if (path === "/api/file/rename" && req.method === "POST") {
-            const body = await req.json();
-            if (!body.file_code || !body.title) {
-                throw new Error("file_code & title required");
-            }
-            const data = await doodFetch(env, "/api/file/rename", {
-                file_code: body.file_code,
-                title: body.title,
-            });
-
-            if (body.file_code) {
-                const meta = (await getMeta(env, body.file_code)) || {};
-                meta.title = body.title;
-                await saveMeta(env, body.file_code, meta);
-            }
-
-            return json(data);
-        }
-
-        if (path === "/api/file/move" && req.method === "POST") {
-            const body = await req.json();
-            if (!body.file_code || !body.fld_id) {
-                throw new Error("file_code & fld_id required");
-            }
-            const data = await doodFetch(env, "/api/file/move", {
-                file_code: body.file_code,
-                fld_id: body.fld_id,
-            });
-
-            if (body.file_code) {
-                const meta = (await getMeta(env, body.file_code)) || {};
-                meta.folder_id = String(body.fld_id);
-                await saveMeta(env, body.file_code, meta);
-            }
-
-            return json(data);
-        }
-
-        if (path === "/api/dmca") {
-            const last = url.searchParams.get("last") || "24";
-            const data = await doodFetch(env, "/api/file/dmca", {
-                last
-            });
-            return json(data);
-        }
-
-        if (path === "/api/encodings") {
-            const code = url.searchParams.get("file_code") || "";
-            const data = await doodFetch(env, "/api/file/encodings", {
-                file_code: code
-            });
-            return json(data);
-        }
-
-        return json({
-            error: "Not found"
-        }, 404);
-    } catch (err) {
-        return json({
-                error: err.message,
-                stack: err.stack,
-            },
-            500
-        );
+  try {
+    if (path === "/api/files") {
+      const data = await doodFetch(env, "/api/file/list", {
+        page: url.searchParams.get("page") || "1",
+        per_page: url.searchParams.get("per_page") || "50",
+        fld_id: url.searchParams.get("fld_id") || "",
+        created: url.searchParams.get("created") || "",
+      });
+      return json(data);
     }
+
+    if (path === "/api/file/info") {
+      const code = url.searchParams.get("file_code");
+      if (!code) throw new Error("file_code required");
+      const data = await doodFetch(env, "/api/file/info", { file_code: code });
+      return json(data);
+    }
+
+    if (path === "/api/file/check") {
+      const code = url.searchParams.get("file_code");
+      if (!code) throw new Error("file_code required");
+      const data = await doodFetch(env, "/api/file/check", { file_code: code });
+      return json(data);
+    }
+
+    if (path === "/api/search") {
+      const q = url.searchParams.get("q") || "";
+      if (!q.trim()) return json({ q, total: 0, results: [] });
+
+      const data = await buildSmartSearch(env, q);
+      return json({
+        q: data.q,
+        total: data.total,
+        totalCorpus: data.totalCorpus,
+        allTags: data.allTags,
+        results: data.results,
+      });
+    }
+
+    if (path === "/api/folders") {
+      const data = await doodFetch(env, "/api/folder/list", { only_folders: "1" });
+      return json(data);
+    }
+
+    if (path === "/api/upload/url" && req.method === "POST") {
+      const body = await req.json();
+      if (!body.url) throw new Error("url required");
+
+      const data = await doodFetch(env, "/api/upload/url", {
+        url: body.url,
+        fld_id: body.fld_id || "0",
+        new_title: body.new_title || body.title || "",
+      });
+
+      const fileCode = extractFileCodeFromUploadResponse(data);
+      const tags = parseTags(body.tags || "");
+
+      if (fileCode) {
+        const folderId = String(body.fld_id || "0");
+        const meta = {
+          title: body.new_title || body.title || "",
+          description: body.description || "",
+          tags,
+          folder_id: folderId,
+          folder_name: body.folder_name || "",
+          source: "url",
+          created_at: new Date().toISOString(),
+          slug: slugify(body.new_title || body.title || fileCode),
+        };
+        await saveMeta(env, fileCode, meta);
+        await saveSlugMap(env, meta.slug, fileCode);
+      }
+
+      if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
+
+      return json({ ok: true, result: data, file_code: fileCode || null });
+    }
+
+    if (path === "/api/upload/server") {
+      const data = await doodFetch(env, "/api/upload/server");
+      return json(data);
+    }
+
+    if (path === "/api/upload/file" && req.method === "POST") {
+      const form = await req.formData();
+      const file = form.get("file");
+
+      if (!file) {
+        return json({ error: "file required" }, 400);
+      }
+
+      const fld_id = form.get("fld_id") || "0";
+      const new_title = form.get("new_title") || "";
+      const tags = parseTags(form.get("tags") || "");
+      const description = String(form.get("description") || "");
+      const folder_name = String(form.get("folder_name") || "");
+
+      const serverRes = await doodFetch(env, "/api/upload/server");
+      const uploadUrl = pickUploadUrl(serverRes);
+
+      if (!uploadUrl) {
+        return json(
+          {
+            error: "Could not get upload server",
+            debug: serverRes,
+          },
+          500
+        );
+      }
+
+      const doodForm = new FormData();
+      if (env.DOOD_KEY) doodForm.append("api_key", env.DOOD_KEY);
+      doodForm.append("file", file, file.name || "upload.mp4");
+      doodForm.append("fld_id", fld_id);
+      if (new_title) doodForm.append("file_title", new_title);
+
+      const uploadRes = await fetch(uploadUrl, {
+        method: "POST",
+        body: doodForm,
+      });
+
+      const text = await uploadRes.text();
+      let uploadData;
+      try {
+        uploadData = JSON.parse(text);
+      } catch {
+        uploadData = {
+          error: "Upload response not JSON",
+          raw: text.slice(0, 1000),
+          status: uploadRes.status,
+        };
+      }
+
+      if (!uploadRes.ok) {
+        return json(
+          {
+            error: "Upload failed",
+            upstream: uploadData,
+            status: uploadRes.status,
+          },
+          500
+        );
+      }
+
+      const fileCode = extractFileCodeFromUploadResponse(uploadData);
+
+      if (fileCode) {
+        const meta = {
+          title: new_title || uploadData?.title || file.name || "",
+          description,
+          tags,
+          folder_id: String(fld_id || "0"),
+          folder_name,
+          source: "file",
+          filename: file.name || "",
+          created_at: new Date().toISOString(),
+          slug: slugify(new_title || file.name || fileCode),
+        };
+        await saveMeta(env, fileCode, meta);
+        await saveSlugMap(env, meta.slug, fileCode);
+      }
+
+      if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
+
+      return json({
+        ok: true,
+        result: uploadData,
+        file_code: fileCode || null,
+      });
+    }
+
+    if (path === "/api/upload/list") {
+      const data = await doodFetch(env, "/api/urlupload/list");
+      return json(data);
+    }
+
+    if (path === "/api/upload/status") {
+      const code = url.searchParams.get("file_code");
+      if (!code) throw new Error("file_code required");
+      const data = await doodFetch(env, "/api/urlupload/status", { file_code: code });
+      return json(data);
+    }
+
+    if (path === "/api/folder/create" && req.method === "POST") {
+      const body = await req.json();
+      if (!body.name) throw new Error("name required");
+      const data = await doodFetch(env, "/api/folder/create", {
+        name: body.name,
+        parent_id: body.parent_id || "0",
+      });
+      return json(data);
+    }
+
+    if (path === "/api/file/rename" && req.method === "POST") {
+      const body = await req.json();
+      if (!body.file_code || !body.title) {
+        throw new Error("file_code & title required");
+      }
+      const data = await doodFetch(env, "/api/file/rename", {
+        file_code: body.file_code,
+        title: body.title,
+      });
+
+      if (body.file_code) {
+        const meta = (await getMeta(env, body.file_code)) || {};
+        meta.title = body.title;
+        await saveMeta(env, body.file_code, meta);
+      }
+
+      return json(data);
+    }
+
+    if (path === "/api/file/move" && req.method === "POST") {
+      const body = await req.json();
+      if (!body.file_code || !body.fld_id) {
+        throw new Error("file_code & fld_id required");
+      }
+      const data = await doodFetch(env, "/api/file/move", {
+        file_code: body.file_code,
+        fld_id: body.fld_id,
+      });
+
+      if (body.file_code) {
+        const meta = (await getMeta(env, body.file_code)) || {};
+        meta.folder_id = String(body.fld_id);
+        await saveMeta(env, body.file_code, meta);
+      }
+
+      return json(data);
+    }
+
+    if (path === "/api/dmca") {
+      const last = url.searchParams.get("last") || "24";
+      const data = await doodFetch(env, "/api/file/dmca", { last });
+      return json(data);
+    }
+
+    if (path === "/api/encodings") {
+      const code = url.searchParams.get("file_code") || "";
+      const data = await doodFetch(env, "/api/file/encodings", { file_code: code });
+      return json(data);
+    }
+
+    return json({ error: "Not found" }, 404);
+  } catch (err) {
+    return json(
+      {
+        error: err.message,
+        stack: err.stack,
+      },
+      500
+    );
+  }
 }
 
 export default {
-    async fetch(req, env, ctx) {
-        const url = new URL(req.url);
-        const path = url.pathname;
+  async fetch(req, env, ctx) {
+    const url = new URL(req.url);
+    const path = url.pathname;
 
-        if (req.method === "OPTIONS") {
-            return new Response(null, {
-                headers: corsHeaders
-            });
+    if (req.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    try {
+      if (path.startsWith("/api/")) {
+        return handleApi(req, env, ctx);
+      }
+
+      if (path === "/") return homePage(req, env);
+      if (path === "/watch") return watchPage(req, env);
+      if (path === "/search") return searchPage(req, env);
+      if (path === "/trending") return trendingPage(req, env);
+      if (path === "/upload" || path === "/uploader") return uploadPage();
+      if (path.startsWith("/tag/")) return tagPage(req, env);
+      if (path.startsWith("/embed/")) return embedPage(req, env, path);
+
+      if (path.startsWith("/e/")) {
+        const code = path.split("/").pop();
+        if (!code) return new Response("Invalid", { status: 400 });
+
+        let embedUrl;
+        try {
+          embedUrl = await resolveEmbedUrl(env, code);
+        } catch {
+          embedUrl = "";
         }
 
-        try {
-            if (path.startsWith("/api/")) {
-                return handleApi(req, env, ctx);
-            }
+        // Fallback keras kalau kosong
+        if (!embedUrl || embedUrl.trim() === "") {
+          embedUrl = `https://dood.wf/e/${encodeURIComponent(code)}`;
+        }
 
-            if (path === "/") return homePage(req, env);
-            if (path === "/watch") return watchPage(req, env);
-            if (path === "/search") return searchPage(req, env);
-            if (path === "/trending") return trendingPage(req, env);
-            if (path === "/upload" || path === "/uploader") return uploadPage();
-            if (path.startsWith("/tag/")) return tagPage(req, env);
-            if (path.startsWith("/embed/")) return embedPage(path);
-
-            if (path.startsWith("/e/")) {
-                const code = path.split("/").pop();
-                if (!code) return new Response("Invalid", {
-                    status: 400
-                });
-
-                let embedUrl;
-                try {
-                    embedUrl = await resolveEmbedUrl(env, code);
-                } catch {
-                    embedUrl = "";
-                }
-
-                // Fallback keras kalau kosong
-                if (!embedUrl || embedUrl.trim() === "") {
-                    embedUrl = `https://dood.wf/e/${encodeURIComponent(code)}`;
-                }
-
-                return htmlResponse(
-                    `<!DOCTYPE html>
+        return htmlResponse(
+          `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1777,48 +1705,37 @@ iframe{
 </iframe>
 </body>
 </html>`,
-                    200, {
-                        "x-robots-tag": "noindex, nofollow"
-                    } // ← biar nggak terindeks
-                );
-            }
+          200,
+          { "x-robots-tag": "noindex, nofollow" }
+        );
+      }
 
-            if (path.startsWith("/video/") && env.METADATA) {
-                const slug = path.replace("/video/", "");
-                const data = await getMetaBySlug(env, slug);
+      if (path.startsWith("/video/") && env.METADATA) {
+        const slug = path.replace("/video/", "");
+        const data = await getMetaBySlug(env, slug);
 
-                if (data?.file_code) {
-                    return watchPage(req, env, data.file_code, path);
-                }
-
-                return new Response("Not found", {
-                    status: 404
-                });
-            }
-
-            if (path === "/sitemap.xml") {
-                return sitemapPage(env, url.origin);
-            }
-
-            if (path === "/robots.txt") {
-                const robots = `User-agent: *\nAllow: /\nCrawl-delay: 0\nSitemap: ${url.origin}/sitemap.xml`;
-                return new Response(robots, {
-                    headers: {
-                        "content-type": "text/plain; charset=utf-8"
-                    }
-                });
-            }
-
-            return new Response("Not Found", {
-                status: 404
-            });
-        } catch (err) {
-            return new Response(`Error: ${err.message}\n${err.stack}`, {
-                status: 500,
-                headers: {
-                    "content-type": "text/plain; charset=utf-8"
-                },
-            });
+        if (data?.file_code) {
+          return watchPage(req, env, data.file_code, path);
         }
-    },
+
+        return new Response("Not found", { status: 404 });
+      }
+
+      if (path === "/sitemap.xml") {
+        return sitemapPage(env, url.origin);
+      }
+
+      if (path === "/robots.txt") {
+        const robots = `User-agent: *\nAllow: /\nCrawl-delay: 0\nSitemap: ${url.origin}/sitemap.xml`;
+        return new Response(robots, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
+
+      return new Response("Not Found", { status: 404 });
+    } catch (err) {
+      return new Response(`Error: ${err.message}\n${err.stack}`, {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+  },
 };
