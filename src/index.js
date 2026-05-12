@@ -740,6 +740,8 @@ function baseHtml(title, body, extraHead = "") {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="google-site-verification" content="Qc21YutjFI1j3ZCypno51cAt0gdNo9BsxklL5uU5HhE" />
+  <meta name="msvalidate.01" content="437CC3EDCF14AFAD414C62B9F5DB18FE" />
   ${extraHead}
   <title>${escapeHtml(title)}</title>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet">
