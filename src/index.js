@@ -405,29 +405,30 @@ async function pingIndexNow(origin) {
 }
 
 async function resolveEmbedUrl(env, code) {
-  const fallbackMyVid = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
   const fallbackDood = `https://dood.wf/e/${encodeURIComponent(code)}`;
+  const fallbackMyVid = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
 
   try {
     const info = await doodFetch(env, "/api/file/info", { file_code: code });
     const video = info?.result?.[0] || info?.result || {};
 
-    // Prioritas: embed resmi → dood.wf → myvidplay.com
-    return (
-      video?.protected_embed ||
-      video?.embed_url ||
-      video?.embed ||
-      video?.iframe ||
-      video?.embed_code ||
-      fallbackDood ||
-      fallbackMyVid
-    );
+    // Ambil kandidat pertama yang tidak kosong
+    let raw = video?.protected_embed ||
+              video?.embed_url ||
+              video?.embed ||
+              video?.iframe ||
+              video?.embed_code;
+
+    // Kalau dapat tapi relatif (tanpa http), jadikan absolut
+    if (raw && !raw.startsWith('http')) {
+      raw = 'https://dood.wf' + (raw.startsWith('/') ? '' : '/') + raw;
+    }
+
+    return raw || fallbackDood || fallbackMyVid;
   } catch {
-    // Kalau API error, coba dood.wf dulu, baru myvidplay
     return fallbackDood;
   }
 }
-
 async function enrichVideos(env, videos = [], folderMap = new Map()) {
   if (!Array.isArray(videos) || !videos.length) return [];
   if (!env.METADATA) {
