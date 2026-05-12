@@ -297,6 +297,79 @@ async function enrichVideos(env, videos = [], folderMap = new Map()) {
   );
 }
 
+function hotScore(video) {
+  const now = Date.now();
+
+  const uploadedAt =
+    new Date(
+      video.uploaded ||
+      video.upload_date ||
+      video.created_at ||
+      video.created ||
+      video.date ||
+      now
+    ).getTime() || now;
+
+  const ageHours = Math.max(1, (now - uploadedAt) / 3600000);
+  const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
+
+  const freshnessBoost = Math.max(0, 96 - ageHours) / 96;
+  const viewsBoost = Math.min(1, Math.log10(views + 1) / 6);
+  const randomBoost = Math.random() * 0.08;
+
+  return freshnessBoost * 0.62 + viewsBoost * 0.20 + randomBoost;
+}
+
+async function buildRecommendations(env, currentVideo, limit = 18) {
+  const pages = [1, 2, 3];
+
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map(page =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: "100",
+      })
+    ),
+  ]);
+
+  const folders = extractFolders(foldersRes);
+  const folderMap = new Map();
+  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
+
+  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, files, folderMap);
+
+  const currentTitle = currentVideo?.title || "";
+  const currentFolder = String(currentVideo?.fld_id || "0");
+  const currentTags = Array.isArray(currentVideo?.__meta?.tags) ? currentVideo.__meta.tags : [];
+
+  const ranked = enriched
+    .filter(v => String(v.file_code || "") !== String(currentVideo.file_code || ""))
+    .map(v => {
+      let score = 0;
+
+      score += scoreVideo(currentTitle, v) * 0.58;
+
+      if (String(v.fld_id || "0") === currentFolder) {
+        score += 0.20;
+      }
+
+      const tags = Array.isArray(v.__meta?.tags) ? v.__meta.tags : [];
+      const overlap = tags.filter(t => currentTags.includes(t)).length;
+      score += overlap * 0.16;
+
+      score += hotScore(v);
+
+      return { video: v, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(x => x.video);
+
+  return ranked;
+}
+
 function scoreVideo(query, video) {
   const q = normalizeText(query);
   if (!q) return 0;
@@ -478,6 +551,7 @@ a{color:inherit;text-decoration:none}
 .search-upload-cta .box{background:linear-gradient(135deg, rgba(229,9,20,.15), rgba(255,255,255,.05));border:1px solid var(--line);border-radius:16px;padding:1rem 1.2rem}
 .search-upload-cta .box a{display:inline-block;margin-top:.8rem;padding:.7rem 1rem;border-radius:999px;background:var(--accent);font-weight:700}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
+.kw{background:rgba(229,9,20,.28);color:inherit;padding:0 .18em;border-radius:4px;}
 `;
 
 function baseHtml(title, body, extraHead = "") {
@@ -889,6 +963,8 @@ async function watchPage(req, env) {
   }
 
   const meta = await getMeta(env, code);
+  video.__meta = meta || {};
+
   const title = meta?.title || video.title || "Video";
   const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
   const tags = meta?.tags || [];
@@ -897,6 +973,18 @@ async function watchPage(req, env) {
     <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
     <meta name="robots" content="index,follow">
   `;
+
+  const recommendations = await buildRecommendations(env, video, 18);
+  const recommendationHtml = recommendations.length
+    ? `
+      <div class="row-container">
+        <h2>🔥 Recommended For You</h2>
+        <div class="scroll-row">
+          ${recommendations.map(v => videoCard(v, title)).join("")}
+        </div>
+      </div>
+    `
+    : "";
 
   return new Response(
     baseHtml(title, `
@@ -908,6 +996,8 @@ async function watchPage(req, env) {
           ${renderTags(tags)}
           <p>👁 ${escapeHtml(video.views || "0")} views • ⏱ ${escapeHtml(video.length || "0")}s</p>
         </div>
+
+        ${recommendationHtml}
       </div>
     `, extraHead),
     { headers: { "content-type": "text/html; charset=utf-8" } }
