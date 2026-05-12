@@ -12,12 +12,26 @@ const SEARCH_MAX_PAGES = 5;
 const SEARCH_PER_PAGE = 100;
 const SEARCH_RESULT_LIMIT = 250;
 const SEARCH_CACHE_TTL = 600;
+const HOT_LOOKBACK_HOURS = 96;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: corsHeaders,
   });
+}
+
+function htmlHeaders(extra = {}) {
+  return {
+    "content-type": "text/html; charset=utf-8",
+    "x-robots-tag": "index, follow",
+    "cache-control": "public, max-age=3600, s-maxage=86400",
+    ...extra,
+  };
+}
+
+function htmlResponse(html, status = 200, extra = {}) {
+  return new Response(html, { status, headers: htmlHeaders(extra) });
 }
 
 function escapeHtml(str = "") {
@@ -72,12 +86,12 @@ function pickUploadUrl(serverRes) {
 
 function parseTags(tags = "") {
   if (Array.isArray(tags)) {
-    return [...new Set(tags.map(t => String(t).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+    return [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
   }
   return [...new Set(
     String(tags)
       .split(/[,;\n]+/g)
-      .map(s => s.trim().toLowerCase())
+      .map((s) => s.trim().toLowerCase())
       .filter(Boolean)
   )].slice(0, 12);
 }
@@ -136,7 +150,7 @@ function highlightHtml(text = "", query = "") {
   const q = normalizeText(query);
   if (!q) return safe;
 
-  const tokens = [...new Set(q.split(" ").filter(Boolean))].filter(t => t.length > 1);
+  const tokens = [...new Set(q.split(" ").filter(Boolean))].filter((t) => t.length > 1);
   if (!tokens.length) return safe;
 
   let out = safe;
@@ -151,7 +165,7 @@ function renderTags(tags = [], query = "") {
   if (!Array.isArray(tags) || !tags.length) return "";
   return `<div class="tags">${tags
     .slice(0, 6)
-    .map(t => `<span class="tag">#${highlightHtml(t, query)}</span>`)
+    .map((t) => `<span class="tag">#${highlightHtml(t, query)}</span>`)
     .join("")}</div>`;
 }
 
@@ -182,6 +196,80 @@ function slugify(str = "") {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function isBot(ua = "") {
+  ua = String(ua).toLowerCase();
+  return [
+    "googlebot",
+    "bingbot",
+    "yandex",
+    "duckduckbot",
+    "baiduspider",
+    "facebookexternalhit",
+    "twitterbot",
+    "linkedinbot",
+    "slurp",
+    "crawler",
+    "spider",
+    "telegrambot",
+    "discordbot",
+    "embed",
+    "preview",
+  ].some((x) => ua.includes(x));
+}
+
+function seoKeywords(title = "", tags = []) {
+  const base = normalizeText(title)
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 12);
+
+  return [...new Set([
+    ...base,
+    ...tags,
+    `${title} streaming`,
+    `${title} watch online`,
+    `${title} subtitle indonesia`,
+    `${title} full hd`,
+    `${title} 1080p`,
+  ])]
+    .filter(Boolean)
+    .slice(0, 50)
+    .join(", ");
+}
+
+function relatedKeywords(tags = [], title = "") {
+  const base = normalizeText(title).split(" ").filter(Boolean);
+  const extra = [
+    "watch online",
+    "full hd",
+    "subtitle indonesia",
+    "streaming free",
+    "1080p",
+    "4k",
+    "latest",
+    "hot",
+  ];
+  return [...new Set([...base, ...tags, ...extra])].filter(Boolean).slice(0, 40);
+}
+
+function jsonLdVideo(video, meta, origin, canonicalUrl) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    name: meta?.title || video?.title || "Video",
+    description: meta?.description || `Watch ${meta?.title || video?.title || "video"} online`,
+    thumbnailUrl: [video?.single_img || video?.splash_img || ""].filter(Boolean),
+    uploadDate: video?.uploaded || video?.upload_date || video?.created_at || new Date().toISOString(),
+    contentUrl: canonicalUrl || `${origin}/watch?file_code=${video?.file_code || ""}`,
+    embedUrl: `${origin}/e/${video?.file_code || ""}`,
+    interactionStatistic: {
+      "@type": "InteractionCounter",
+      interactionType: { "@type": "WatchAction" },
+      userInteractionCount: parseInt(video?.views || "0", 10) || 0,
+    },
+  };
 }
 
 async function doodFetch(env, path, params = {}) {
@@ -254,6 +342,27 @@ async function saveMeta(env, fileCode, payload) {
   }
 }
 
+async function getMetaBySlug(env, slug) {
+  if (!env.METADATA || !slug) return null;
+  try {
+    return await env.METADATA.get(`slug:${slug}`, { type: "json" });
+  } catch {
+    return null;
+  }
+}
+
+async function saveSlugMap(env, slug, fileCode) {
+  if (!env.METADATA || !slug || !fileCode) return false;
+  try {
+    await env.METADATA.put(`slug:${slug}`, JSON.stringify({ file_code: fileCode }), {
+      expirationTtl: 60 * 60 * 24 * 365,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function getSearchCache(env, key) {
   if (!env.METADATA) return null;
   try {
@@ -275,10 +384,43 @@ async function setSearchCache(env, key, payload) {
   }
 }
 
+async function pingIndexNow(origin) {
+  const sitemap = `${origin}/sitemap.xml`;
+  const endpoints = [
+    `https://www.google.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
+    `https://www.bing.com/ping?sitemap=${encodeURIComponent(sitemap)}`,
+  ];
+  await Promise.allSettled(
+    endpoints.map((u) =>
+      fetch(u, {
+        headers: { "user-agent": "Mozilla/5.0" },
+      })
+    )
+  );
+}
+
+async function resolveEmbedUrl(env, code) {
+  const fallback = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
+  try {
+    const info = await doodFetch(env, "/api/file/info", { file_code: code });
+    const video = info?.result?.[0] || info?.result || {};
+    return (
+      video?.protected_embed ||
+      video?.embed_url ||
+      video?.embed ||
+      video?.iframe ||
+      video?.embed_code ||
+      fallback
+    );
+  } catch {
+    return fallback;
+  }
+}
+
 async function enrichVideos(env, videos = [], folderMap = new Map()) {
   if (!Array.isArray(videos) || !videos.length) return [];
   if (!env.METADATA) {
-    return videos.map(v => ({
+    return videos.map((v) => ({
       ...v,
       __folderName: folderMap.get(String(v.fld_id || "0")) || "",
       __meta: null,
@@ -299,75 +441,24 @@ async function enrichVideos(env, videos = [], folderMap = new Map()) {
 
 function hotScore(video) {
   const now = Date.now();
-
   const uploadedAt =
     new Date(
       video.uploaded ||
-      video.upload_date ||
-      video.created_at ||
-      video.created ||
-      video.date ||
-      now
+        video.upload_date ||
+        video.created_at ||
+        video.created ||
+        video.date ||
+        now
     ).getTime() || now;
 
   const ageHours = Math.max(1, (now - uploadedAt) / 3600000);
   const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
 
-  const freshnessBoost = Math.max(0, 96 - ageHours) / 96;
+  const freshnessBoost = Math.max(0, HOT_LOOKBACK_HOURS - ageHours) / HOT_LOOKBACK_HOURS;
   const viewsBoost = Math.min(1, Math.log10(views + 1) / 6);
-  const randomBoost = Math.random() * 0.08;
+  const randomBoost = Math.random() * 0.05;
 
-  return freshnessBoost * 0.62 + viewsBoost * 0.20 + randomBoost;
-}
-
-async function buildRecommendations(env, currentVideo, limit = 18) {
-  const pages = [1, 2, 3];
-
-  const [foldersRes, ...listPages] = await Promise.all([
-    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
-    ...pages.map(page =>
-      doodFetch(env, "/api/file/list", {
-        page: String(page),
-        per_page: "100",
-      })
-    ),
-  ]);
-
-  const folders = extractFolders(foldersRes);
-  const folderMap = new Map();
-  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
-
-  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
-  const enriched = await enrichVideos(env, files, folderMap);
-
-  const currentTitle = currentVideo?.title || "";
-  const currentFolder = String(currentVideo?.fld_id || "0");
-  const currentTags = Array.isArray(currentVideo?.__meta?.tags) ? currentVideo.__meta.tags : [];
-
-  const ranked = enriched
-    .filter(v => String(v.file_code || "") !== String(currentVideo.file_code || ""))
-    .map(v => {
-      let score = 0;
-
-      score += scoreVideo(currentTitle, v) * 0.58;
-
-      if (String(v.fld_id || "0") === currentFolder) {
-        score += 0.20;
-      }
-
-      const tags = Array.isArray(v.__meta?.tags) ? v.__meta.tags : [];
-      const overlap = tags.filter(t => currentTags.includes(t)).length;
-      score += overlap * 0.16;
-
-      score += hotScore(v);
-
-      return { video: v, score };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(x => x.video);
-
-  return ranked;
+  return freshnessBoost * 0.62 + viewsBoost * 0.25 + randomBoost;
 }
 
 function scoreVideo(query, video) {
@@ -386,12 +477,12 @@ function scoreVideo(query, video) {
 
   let score = 0;
 
-  if (title === q) score += 1.40;
+  if (title === q) score += 1.4;
   if (title.includes(q)) score += 0.65;
   if (tags && tags.includes(q)) score += 0.38;
   if (folderName && folderName.includes(q)) score += 0.26;
   if (desc && desc.includes(q)) score += 0.12;
-  if (blob === q) score += 0.90;
+  if (blob === q) score += 0.9;
 
   const qTokens = q.split(" ").filter(Boolean);
   const titleTokens = new Set(title.split(" ").filter(Boolean));
@@ -415,8 +506,8 @@ function scoreVideo(query, video) {
   }
 
   if (qTokens.length) {
-    score += (hitTitle / qTokens.length) * 0.36;
-    score += (hitTags / qTokens.length) * 0.24;
+    score += (hitTitle / qTokens.length) * 0.38;
+    score += (hitTags / qTokens.length) * 0.25;
     score += (hitFolder / qTokens.length) * 0.14;
     score += (hitDesc / qTokens.length) * 0.07;
     score += (hitAny / qTokens.length) * 0.08;
@@ -424,7 +515,7 @@ function scoreVideo(query, video) {
 
   const simTitle = similarity(q, title);
   const simBlob = similarity(q, blob);
-  score += simTitle * 0.34;
+  score += simTitle * 0.35;
   score += simBlob * 0.08;
 
   const views = Math.max(0, parseInt(video.views || "0", 10) || 0);
@@ -434,11 +525,88 @@ function scoreVideo(query, video) {
   return Math.min(1.8, score);
 }
 
+async function buildRecommendations(env, currentVideo, limit = 18) {
+  const pages = [1, 2, 3];
+
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map((page) =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: "100",
+      })
+    ),
+  ]);
+
+  const folders = asArray(extractFolders(foldersRes));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+
+  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, files, folderMap);
+
+  const currentTitle = currentVideo?.title || "";
+  const currentFolder = String(currentVideo?.fld_id || "0");
+  const currentTags = Array.isArray(currentVideo?.__meta?.tags) ? currentVideo.__meta.tags : [];
+
+  const ranked = enriched
+    .filter((v) => String(v.file_code || "") !== String(currentVideo.file_code || ""))
+    .map((v) => {
+      let score = 0;
+      score += scoreVideo(currentTitle, v) * 0.58;
+
+      if (String(v.fld_id || "0") === currentFolder) score += 0.2;
+
+      const tags = Array.isArray(v.__meta?.tags) ? v.__meta.tags : [];
+      const overlap = tags.filter((t) => currentTags.includes(t)).length;
+      score += overlap * 0.16;
+
+      score += hotScore(v);
+
+      return { video: v, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.video);
+
+  return ranked;
+}
+
+async function buildTrending(env, limit = 36) {
+  const pages = [1, 2, 3, 4, 5];
+
+  const [foldersRes, ...listPages] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    ...pages.map((page) =>
+      doodFetch(env, "/api/file/list", {
+        page: String(page),
+        per_page: "100",
+      })
+    ),
+  ]);
+
+  const folders = asArray(extractFolders(foldersRes));
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+
+  const files = dedupeByFileCode(listPages.flatMap(extractFiles));
+  const enriched = await enrichVideos(env, files, folderMap);
+
+  return [...enriched]
+    .sort((a, b) => {
+      const sa = hotScore(a);
+      const sb = hotScore(b);
+      if (sb !== sa) return sb - sa;
+      return (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0);
+    })
+    .slice(0, limit);
+}
+
 async function buildSmartSearch(env, query) {
   const q = String(query || "").trim();
   const normalized = normalizeText(q);
 
-  const cacheKey = `search:${encodeURIComponent(normalized || q).slice(0, 120)}:v4`;
+  const cacheKey = `search:${encodeURIComponent(normalized || q).slice(0, 120)}:v5`;
   const cached = await getSearchCache(env, cacheKey);
   if (cached && Array.isArray(cached.results)) return cached;
 
@@ -446,7 +614,7 @@ async function buildSmartSearch(env, query) {
 
   const [foldersRes, ...listPages] = await Promise.all([
     doodFetch(env, "/api/folder/list", { only_folders: "1" }),
-    ...pages.map(page =>
+    ...pages.map((page) =>
       doodFetch(env, "/api/file/list", {
         page: String(page),
         per_page: String(SEARCH_PER_PAGE),
@@ -454,22 +622,22 @@ async function buildSmartSearch(env, query) {
     ),
   ]);
 
-  const folders = extractFolders(foldersRes);
+  const folders = asArray(extractFolders(foldersRes));
   const folderMap = new Map();
-  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
 
   const allFiles = dedupeByFileCode(listPages.flatMap(extractFiles));
   const enriched = await enrichVideos(env, allFiles, folderMap);
 
   const ranked = enriched
-    .map(v => ({ v, score: scoreVideo(q, v) }))
-    .filter(x => x.score > 0.18)
+    .map((v) => ({ v, score: scoreVideo(q, v) }))
+    .filter((x) => x.score > 0.18)
     .sort((a, b) => b.score - a.score)
-    .map(x => x.v)
+    .map((x) => x.v)
     .slice(0, SEARCH_RESULT_LIMIT);
 
   const allTags = [...new Set(
-    ranked.flatMap(v => Array.isArray(v.__meta?.tags) ? v.__meta.tags : [])
+    ranked.flatMap((v) => (Array.isArray(v.__meta?.tags) ? v.__meta.tags : []))
   )];
 
   const payload = {
@@ -532,7 +700,6 @@ a{color:inherit;text-decoration:none}
 .pagination{display:flex;justify-content:center;align-items:center;gap:1rem;padding:2rem;flex-wrap:wrap}
 .pagination button{padding:.5rem 1rem;border:none;border-radius:4px;background:var(--accent);color:white;cursor:pointer}
 .watch-container{max-width:1200px;margin:2rem auto;padding:0 1rem}
-.watch-container iframe{width:100%;height:70vh;border:none;border-radius:12px;background:#000}
 .watch-info{margin-top:1.5rem}
 .watch-info h1{font-size:2rem;margin-bottom:.5rem}
 .footer{text-align:center;padding:2rem;color:var(--muted);border-top:1px solid var(--line);margin-top:3rem}
@@ -550,9 +717,9 @@ a{color:inherit;text-decoration:none}
 .search-upload-cta{max-width:980px;margin:1rem auto 0;padding:0 1rem}
 .search-upload-cta .box{background:linear-gradient(135deg, rgba(229,9,20,.15), rgba(255,255,255,.05));border:1px solid var(--line);border-radius:16px;padding:1rem 1.2rem}
 .search-upload-cta .box a{display:inline-block;margin-top:.8rem;padding:.7rem 1rem;border-radius:999px;background:var(--accent);font-weight:700}
+.player-wrap{position:relative;width:100%;padding-top:56.25%;background:#000;border-radius:16px;overflow:hidden;margin-bottom:1rem}
+.player-wrap iframe{position:absolute;inset:0;width:100%;height:100%;border:none}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
-.kw{background:rgba(229,9,20,.28);color:inherit;padding:0 .18em;border-radius:4px;}
-.player-wrap{position:relative;width:100%;padding-top:56.25%;background:#000;border-radius:16px;overflow:hidden;margin-bottom:1rem}.player-wrap iframe{position:absolute;inset:0;width:100%;height:100%;border:none}
 `;
 
 function baseHtml(title, body, extraHead = "") {
@@ -625,89 +792,6 @@ function baseHtml(title, body, extraHead = "") {
   </script>
 </body>
 </html>`;
-}
-
-async function getMetaBySlug(env, slug) {
-  if (!env.METADATA || !slug) return null;
-  try {
-    return await env.METADATA.get(`slug:${slug}`, { type: "json" });
-  } catch {
-    return null;
-  }
-}
-
-async function homePage(req, env) {
-  const url = new URL(req.url);
-  const page = parseInt(url.searchParams.get("page") || "1", 10);
-  const category = url.searchParams.get("category") || "all";
-  const perPage = 24;
-
-  const [foldersRes, filesRes] = await Promise.all([
-    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
-    doodFetch(env, "/api/file/list", {
-      page: String(page),
-      per_page: String(perPage),
-      ...(category !== "all" ? { fld_id: category } : {}),
-    }),
-  ]);
-
-  const folders = extractFolders(foldersRes);
-  const files = extractFiles(filesRes);
-  const totalPages = parseInt(filesRes?.result?.total_pages || filesRes?.total_pages || "1", 10) || 1;
-
-  const folderMap = new Map();
-  folders.forEach(f => folderMap.set(String(f.fld_id), f.name));
-
-  const enriched = await enrichVideos(env, files, folderMap);
-
-  const byViews = [...asArray(enriched)].sort((a, b) => parseInt(b?.views || "0", 10) - parseInt(a?.views || "0", 10));
-  const heroVideo = byViews[0];
-  const trending = byViews.slice(0, 10);
-
-  const categorized = new Map();
-  enriched.forEach(v => {
-    const fid = String(v.fld_id || "0");
-    const name = folderMap.get(fid) || (fid === "0" ? "Uncategorized" : "Unknown");
-    if (!categorized.has(name)) categorized.set(name, []);
-    categorized.get(name).push(v);
-  });
-
-  let rows = "";
-  for (const [catName, vids] of categorized) {
-    const cards = vids.slice(0, 15).map(v => videoCard(v)).join("");
-    rows += `<div class="row-container"><h2>📁 ${escapeHtml(catName)}</h2><div class="scroll-row">${cards}</div></div>`;
-  }
-
-  const heroHtml = heroVideo ? `
-    <div class="hero" style="background-image:url(${escapeHtml(heroVideo.single_img || heroVideo.splash_img || "")})">
-      <div class="hero-content">
-        <h1>${escapeHtml(heroVideo.title || "Untitled")}</h1>
-        <p>🔥 Trending #1 · ${escapeHtml(heroVideo.views || "0")} views</p>
-        <button onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">▶ Play</button>
-        <button class="secondary" onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">ℹ Info</button>
-      </div>
-    </div>` : "";
-
-  const trendingCards = trending.map(v => videoCard(v)).join("");
-
-  const paginationHtml = totalPages > 1 ? `<div class="pagination">
-    ${page > 1 ? `<button onclick="location.href='?page=${page - 1}&category=${encodeURIComponent(category)}'">‹ Prev</button>` : ""}
-    <span>${page} / ${totalPages}</span>
-    ${page < totalPages ? `<button onclick="location.href='?page=${page + 1}&category=${encodeURIComponent(category)}'">Next ›</button>` : ""}
-  </div>` : "";
-
-  return new Response(
-    baseHtml("XStreaming · Home", `
-      ${heroHtml}
-      <div class="row-container"><h2>🔥 Trending Now</h2><div class="scroll-row">${trendingCards}</div></div>
-      ${rows}
-      ${paginationHtml}
-    `, `
-      <meta name="description" content="XStreaming home">
-      <meta name="robots" content="index,follow">
-    `),
-    { headers: { "content-type": "text/html; charset=utf-8" } }
-  );
 }
 
 async function uploadFormsHtml() {
@@ -877,13 +961,94 @@ async function uploadFormsHtml() {
 }
 
 async function uploadPage() {
-  return new Response(
-    baseHtml("Upload Video", `
-      ${await uploadFormsHtml()}
-    `, `
-      <meta name="robots" content="noindex,nofollow">
-    `),
-    { headers: { "content-type": "text/html; charset=utf-8" } }
+  return htmlResponse(
+    baseHtml(
+      "Upload Video",
+      `${await uploadFormsHtml()}`,
+      `<meta name="robots" content="noindex,nofollow">`
+    )
+  );
+}
+
+async function homePage(req, env) {
+  const url = new URL(req.url);
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const category = url.searchParams.get("category") || "all";
+  const perPage = 24;
+
+  const [foldersRes, filesRes] = await Promise.all([
+    doodFetch(env, "/api/folder/list", { only_folders: "1" }),
+    doodFetch(env, "/api/file/list", {
+      page: String(page),
+      per_page: String(perPage),
+      ...(category !== "all" ? { fld_id: category } : {}),
+    }),
+  ]);
+
+  const folders = asArray(extractFolders(foldersRes));
+  const files = extractFiles(filesRes);
+  const totalPages = parseInt(filesRes?.result?.total_pages || filesRes?.total_pages || "1", 10) || 1;
+
+  const folderMap = new Map();
+  folders.forEach((f) => folderMap.set(String(f.fld_id), f.name));
+
+  const enriched = await enrichVideos(env, files, folderMap);
+  const byViews = [...asArray(enriched)].sort(
+    (a, b) => (parseInt(b?.views || "0", 10) || 0) - (parseInt(a?.views || "0", 10) || 0)
+  );
+  const heroVideo = byViews[0];
+  const trending = byViews.slice(0, 10);
+
+  const categorized = new Map();
+  enriched.forEach((v) => {
+    const fid = String(v.fld_id || "0");
+    const name = folderMap.get(fid) || (fid === "0" ? "Uncategorized" : "Unknown");
+    if (!categorized.has(name)) categorized.set(name, []);
+    categorized.get(name).push(v);
+  });
+
+  let rows = "";
+  for (const [catName, vids] of categorized) {
+    const cards = vids.slice(0, 15).map((v) => videoCard(v)).join("");
+    rows += `<div class="row-container"><h2>📁 ${escapeHtml(catName)}</h2><div class="scroll-row">${cards}</div></div>`;
+  }
+
+  const heroHtml = heroVideo
+    ? `
+    <div class="hero" style="background-image:url(${escapeHtml(heroVideo.single_img || heroVideo.splash_img || "")})">
+      <div class="hero-content">
+        <h1>${escapeHtml(heroVideo.title || "Untitled")}</h1>
+        <p>🔥 Trending #1 · ${escapeHtml(heroVideo.views || "0")} views</p>
+        <button onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">▶ Play</button>
+        <button class="secondary" onclick="location.href='/watch?file_code=${encodeURIComponent(heroVideo.file_code || "")}'">ℹ Info</button>
+      </div>
+    </div>`
+    : "";
+
+  const trendingCards = trending.map((v) => videoCard(v)).join("");
+
+  const paginationHtml = totalPages > 1
+    ? `<div class="pagination">
+      ${page > 1 ? `<button onclick="location.href='?page=${page - 1}&category=${encodeURIComponent(category)}'">‹ Prev</button>` : ""}
+      <span>${page} / ${totalPages}</span>
+      ${page < totalPages ? `<button onclick="location.href='?page=${page + 1}&category=${encodeURIComponent(category)}'">Next ›</button>` : ""}
+    </div>`
+    : "";
+
+  return htmlResponse(
+    baseHtml(
+      "XStreaming · Home",
+      `
+      ${heroHtml}
+      <div class="row-container"><h2>🔥 Trending Now</h2><div class="scroll-row">${trendingCards}</div></div>
+      ${rows}
+      ${paginationHtml}
+    `,
+      `
+      <meta name="description" content="XStreaming home">
+      <meta name="robots" content="index,follow">
+    `
+    )
   );
 }
 
@@ -894,14 +1059,17 @@ async function searchPage(req, env) {
   const perPage = 24;
 
   if (!q.trim()) {
-    return new Response(
-      baseHtml("Search", `
+    return htmlResponse(
+      baseHtml(
+        "Search",
+        `
         <div style="padding:2rem">
           <h2>Masukkan kata pencarian</h2>
           <p class="muted">Contoh: anime, action, music, tutorial, vlog</p>
         </div>
-      `, `<meta name="robots" content="noindex,nofollow">`),
-      { headers: { "content-type": "text/html; charset=utf-8" } }
+      `,
+        `<meta name="robots" content="noindex,nofollow">`
+      )
     );
   }
 
@@ -914,16 +1082,18 @@ async function searchPage(req, env) {
   const pageResults = results.slice((page - 1) * perPage, page * perPage);
 
   const grid = pageResults.length
-    ? pageResults.map(v => videoCard(v, q)).join("")
+    ? pageResults.map((v) => videoCard(v, q)).join("")
     : `<p style="padding:2rem;color:var(--muted)">Tidak ada hasil yang mendekati "${escapeHtml(q)}"</p>`;
 
-  const paginationHtml = total > perPage ? `
+  const paginationHtml = total > perPage
+    ? `
     <div class="pagination">
       ${page > 1 ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page - 1}'">‹ Prev</button>` : ""}
       <span>${page} / ${pageCount}</span>
       ${page < pageCount ? `<button onclick="location.href='?q=${encodeURIComponent(q)}&page=${page + 1}'">Next ›</button>` : ""}
     </div>
-  ` : "";
+  `
+    : "";
 
   const extraHead = `
     <meta name="description" content="Hasil pencarian video untuk ${escapeHtml(q)} di XStreaming">
@@ -932,34 +1102,82 @@ async function searchPage(req, env) {
     <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
   `;
 
-  return new Response(
-    baseHtml(`Search: ${escapeHtml(q)}`, `
+  return htmlResponse(
+    baseHtml(
+      `Search: ${escapeHtml(q)}`,
+      `
       <div style="padding:2rem 2rem 0">
         <h2 style="margin-bottom:.4rem">Hasil untuk "${escapeHtml(q)}"</h2>
         <p class="muted">${total} video yang mirip ditemukan dari ${data.totalCorpus || 0} data</p>
       </div>
 
-      ${allTags.length ? `<div class="tag-cloud">${allTags.slice(0, 18).map(t => `<span class="tag-chip">#${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+      ${allTags.length ? `<div class="tag-cloud">${allTags.slice(0, 18).map((t) => `<span class="tag-chip">#${escapeHtml(t)}</span>`).join("")}</div>` : ""}
 
       <div class="search-grid">${grid}</div>
       ${paginationHtml}
-    `, extraHead),
-    { headers: { "content-type": "text/html; charset=utf-8" } }
+    `,
+      extraHead
+    )
   );
 }
 
-async function watchPage(req, env) {
+async function trendingPage(req, env) {
+  const videos = await buildTrending(env, 72);
+  const cards = videos.map((v) => videoCard(v)).join("");
+  return htmlResponse(
+    baseHtml(
+      "Trending Videos",
+      `
+      <div style="padding:2rem 2rem 0">
+        <h1>Trending Videos</h1>
+        <p class="muted">Video paling baru dan paling hot.</p>
+      </div>
+      <div class="search-grid">${cards}</div>
+    `,
+      `<meta name="description" content="Trending videos on XStreaming"><meta name="robots" content="index,follow">`
+    )
+  );
+}
+
+async function tagPage(req, env) {
   const url = new URL(req.url);
-  const code = url.searchParams.get("file_code");
+  const tag = decodeURIComponent(url.pathname.replace("/tag/", "")).trim();
+  if (!tag) return new Response("Not found", { status: 404 });
+
+  const data = await buildSmartSearch(env, tag);
+  const cards = (data.results || []).map((v) => videoCard(v, tag)).join("");
+
+  return htmlResponse(
+    baseHtml(
+      `${escapeHtml(tag)} Videos`,
+      `
+      <div style="padding:2rem 2rem 0">
+        <h1>${escapeHtml(tag)} Videos</h1>
+        <p class="muted">Watch ${escapeHtml(tag)} videos online free HD streaming.</p>
+      </div>
+      <div class="search-grid">${cards}</div>
+    `,
+      `
+      <meta name="description" content="Watch ${escapeHtml(tag)} videos online free HD streaming">
+      <meta name="keywords" content="${escapeHtml(tag)}, streaming, hd, watch online">
+      <meta name="robots" content="index,follow">
+    `
+    )
+  );
+}
+
+async function watchPage(req, env, fileCodeOverride = "", canonicalPathOverride = "") {
+  const url = new URL(req.url);
+  const code = fileCodeOverride || url.searchParams.get("file_code");
   if (!code) return new Response("Missing file_code", { status: 400 });
 
   const info = await doodFetch(env, "/api/file/info", { file_code: code });
   const video = info?.result?.[0] || info?.result || null;
 
   if (!video) {
-    return new Response(
+    return htmlResponse(
       baseHtml("Video not found", `<div class="watch-container"><p>Video not found.</p></div>`),
-      { status: 404, headers: { "content-type": "text/html; charset=utf-8" } }
+      404
     );
   }
 
@@ -970,39 +1188,90 @@ async function watchPage(req, env) {
     video?.protected_embed ||
     video?.embed_url ||
     video?.embed ||
-    `https://myvidplay.com/e/${encodeURIComponent(video.filecode || code)}`;
+    (await resolveEmbedUrl(env, code));
 
   const title = meta?.title || video.title || "Video";
+  const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
+  const tags = Array.isArray(meta?.tags) ? meta.tags : [];
+  const origin = url.origin;
 
-  const description =
-    meta?.description ||
-    `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
-
-  const tags = meta?.tags || [];
+  const canonicalUrl = canonicalPathOverride
+    ? `${origin}${canonicalPathOverride}`
+    : meta?.slug
+      ? `${origin}/video/${meta.slug}`
+      : `${origin}/watch?file_code=${encodeURIComponent(code)}`;
 
   const extraHead = `
     <meta name="description" content="${escapeHtml(description)}">
     <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
-    <meta name="robots" content="index,follow">
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
+    <link rel="canonical" href="${escapeHtml(canonicalUrl)}">
+
+    <meta property="og:type" content="video.other">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:image" content="${escapeHtml(video.single_img || video.splash_img || "")}">
+    <meta property="og:url" content="${escapeHtml(canonicalUrl)}">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="${escapeHtml(title)}">
+    <meta name="twitter:description" content="${escapeHtml(description)}">
+    <meta name="twitter:image" content="${escapeHtml(video.single_img || video.splash_img || "")}">
+
+    <script type="application/ld+json">${JSON.stringify(jsonLdVideo(video, meta, origin, canonicalUrl))}</script>
   `;
 
+  const bot = isBot(req.headers.get("user-agent") || "");
   const recommendations = await buildRecommendations(env, video, 18);
-
   const recommendationHtml = recommendations.length
     ? `
       <div class="row-container">
         <h2>🔥 Recommended For You</h2>
         <div class="scroll-row">
-          ${recommendations.map(v => videoCard(v, title)).join("")}
+          ${recommendations.map((v) => videoCard(v, title)).join("")}
         </div>
       </div>
     `
     : "";
 
-  return new Response(
-    baseHtml(title, `
-      <div class="watch-container">
+  const exploreKeywords = relatedKeywords(tags, title);
+  const exploreHtml = exploreKeywords.length
+    ? `
+      <div class="row-container">
+        <h2>🧭 Explore More</h2>
+        <div class="tag-cloud">
+          ${exploreKeywords.map((k) => `<a class="tag-chip" href="/tag/${encodeURIComponent(k)}">${escapeHtml(k)}</a>`).join("")}
+        </div>
+      </div>
+    `
+    : "";
 
+  if (bot) {
+    return htmlResponse(
+      `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  ${extraHead}
+  <title>${escapeHtml(title)}</title>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <img src="${escapeHtml(video.single_img || video.splash_img || "")}" alt="${escapeHtml(title)}" />
+  <p>${escapeHtml(description)}</p>
+  <p>${escapeHtml(video.views || "0")} views</p>
+  <p>${escapeHtml(embedUrl)}</p>
+</body>
+</html>`
+    );
+  }
+
+  return htmlResponse(
+    baseHtml(
+      title,
+      `
+      <div class="watch-container">
         <div class="player-wrap">
           <iframe
             src="${escapeHtml(embedUrl)}"
@@ -1020,36 +1289,45 @@ async function watchPage(req, env) {
         </div>
 
         ${recommendationHtml}
-
+        ${exploreHtml}
       </div>
-    `, extraHead),
-    { headers: { "content-type": "text/html; charset=utf-8" } }
+    `,
+      extraHead
+    )
   );
 }
+
 function embedPage(path) {
   const code = path.split("/").pop();
   if (!code) return new Response("Invalid", { status: 400 });
-  const html = `<!DOCTYPE html>
+
+  return htmlResponse(
+    `<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Embed</title>
-  <style>body{margin:0;background:#000}iframe{width:100%;height:100vh;border:none}</style>
+  <style>
+    html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}
+    iframe{width:100%;height:100%;border:none}
+  </style>
 </head>
 <body>
-  <iframe src="https://dood.wf/e/${encodeURIComponent(code)}" allowfullscreen></iframe>
+  <iframe src="https://myvidplay.com/e/${encodeURIComponent(code)}" scrolling="no" frameborder="0" allowfullscreen="true"></iframe>
 </body>
-</html>`;
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+</html>`
+  );
 }
 
 async function sitemapPage(env, origin) {
   if (!env.METADATA) {
     return new Response("", { status: 404 });
   }
+
   const list = await env.METADATA.list({ prefix: "slug:" });
   let urls = "";
+
   for (const key of list.keys) {
     const slug = key.name.replace("slug:", "");
     const data = await env.METADATA.get(key.name, { type: "json" });
@@ -1057,11 +1335,20 @@ async function sitemapPage(env, origin) {
       urls += `<url><loc>${origin}/video/${slug}</loc></url>`;
     }
   }
+
+  const staticTags = ["anime", "action", "drama", "comedy", "music", "sports", "viral", "education", "trending", "hot"];
+  for (const t of staticTags) {
+    urls += `<url><loc>${origin}/tag/${encodeURIComponent(t)}</loc></url>`;
+  }
+
+  urls += `<url><loc>${origin}/trending</loc></url>`;
+  urls += `<url><loc>${origin}/search</loc></url>`;
+
   const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
   return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8" } });
 }
 
-async function handleApi(req, env) {
+async function handleApi(req, env, ctx) {
   const url = new URL(req.url);
   const path = url.pathname;
 
@@ -1105,9 +1392,7 @@ async function handleApi(req, env) {
     }
 
     if (path === "/api/folders") {
-      const data = await doodFetch(env, "/api/folder/list", {
-        only_folders: "1",
-      });
+      const data = await doodFetch(env, "/api/folder/list", { only_folders: "1" });
       return json(data);
     }
 
@@ -1137,12 +1422,10 @@ async function handleApi(req, env) {
           slug: slugify(body.new_title || body.title || fileCode),
         };
         await saveMeta(env, fileCode, meta);
-        if (meta.slug) {
-          try {
-            await env.METADATA.put(`slug:${meta.slug}`, JSON.stringify({ file_code: fileCode }));
-          } catch {}
-        }
+        await saveSlugMap(env, meta.slug, fileCode);
       }
+
+      if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
 
       return json({ ok: true, result: data, file_code: fileCode || null });
     }
@@ -1228,12 +1511,10 @@ async function handleApi(req, env) {
           slug: slugify(new_title || file.name || fileCode),
         };
         await saveMeta(env, fileCode, meta);
-        if (meta.slug) {
-          try {
-            await env.METADATA.put(`slug:${meta.slug}`, JSON.stringify({ file_code: fileCode }));
-          } catch {}
-        }
+        await saveSlugMap(env, meta.slug, fileCode);
       }
+
+      if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
 
       return json({
         ok: true,
@@ -1327,7 +1608,7 @@ async function handleApi(req, env) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -1337,21 +1618,64 @@ export default {
 
     try {
       if (path.startsWith("/api/")) {
-        return handleApi(req, env);
+        return handleApi(req, env, ctx);
       }
 
       if (path === "/") return homePage(req, env);
       if (path === "/watch") return watchPage(req, env);
       if (path === "/search") return searchPage(req, env);
+      if (path === "/trending") return trendingPage(req, env);
       if (path === "/upload" || path === "/uploader") return uploadPage();
+      if (path.startsWith("/tag/")) return tagPage(req, env);
       if (path.startsWith("/embed/")) return embedPage(path);
+
+      if (path.startsWith("/e/")) {
+        const code = path.split("/").pop();
+        if (!code) return new Response("Invalid", { status: 400 });
+
+        const embedUrl = await resolveEmbedUrl(env, code);
+
+        return htmlResponse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Player</title>
+<style>
+html,body{
+  margin:0;
+  padding:0;
+  width:100%;
+  height:100%;
+  background:#000;
+  overflow:hidden;
+}
+iframe{
+  width:100%;
+  height:100%;
+  border:none;
+}
+</style>
+</head>
+<body>
+<iframe
+  src="${escapeHtml(embedUrl)}"
+  scrolling="no"
+  frameborder="0"
+  allowfullscreen="true">
+</iframe>
+</body>
+</html>`);
+      }
 
       if (path.startsWith("/video/") && env.METADATA) {
         const slug = path.replace("/video/", "");
         const data = await getMetaBySlug(env, slug);
+
         if (data?.file_code) {
-          return Response.redirect(url.origin + `/watch?file_code=${encodeURIComponent(data.file_code)}`, 301);
+          return watchPage(req, env, data.file_code, path);
         }
+
         return new Response("Not found", { status: 404 });
       }
 
@@ -1360,7 +1684,7 @@ export default {
       }
 
       if (path === "/robots.txt") {
-        const robots = `User-agent: *\nAllow: /\nSitemap: ${url.origin}/sitemap.xml`;
+        const robots = `User-agent: *\nAllow: /\nCrawl-delay: 0\nSitemap: ${url.origin}/sitemap.xml`;
         return new Response(robots, { headers: { "content-type": "text/plain; charset=utf-8" } });
       }
 
