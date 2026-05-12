@@ -552,6 +552,7 @@ a{color:inherit;text-decoration:none}
 .search-upload-cta .box a{display:inline-block;margin-top:.8rem;padding:.7rem 1rem;border-radius:999px;background:var(--accent);font-weight:700}
 @media(max-width:768px){.hero{height:50vh}.hero h1{font-size:2rem}}
 .kw{background:rgba(229,9,20,.28);color:inherit;padding:0 .18em;border-radius:4px;}
+.player-wrap{position:relative;width:100%;padding-top:56.25%;background:#000;border-radius:16px;overflow:hidden;margin-bottom:1rem}.player-wrap iframe{position:absolute;inset:0;width:100%;height:100%;border:none}
 `;
 
 function baseHtml(title, body, extraHead = "") {
@@ -965,9 +966,20 @@ async function watchPage(req, env) {
   const meta = await getMeta(env, code);
   video.__meta = meta || {};
 
+  const embedUrl =
+    video?.protected_embed ||
+    video?.embed_url ||
+    video?.embed ||
+    `https://myvidplay.com/e/${encodeURIComponent(video.filecode || code)}`;
+
   const title = meta?.title || video.title || "Video";
-  const description = meta?.description || `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
+
+  const description =
+    meta?.description ||
+    `Uploaded ${video.uploaded || "-"} • ${video.views || 0} views`;
+
   const tags = meta?.tags || [];
+
   const extraHead = `
     <meta name="description" content="${escapeHtml(description)}">
     <meta name="keywords" content="${escapeHtml([title, ...tags].filter(Boolean).join(", "))}">
@@ -975,6 +987,7 @@ async function watchPage(req, env) {
   `;
 
   const recommendations = await buildRecommendations(env, video, 18);
+
   const recommendationHtml = recommendations.length
     ? `
       <div class="row-container">
@@ -989,7 +1002,16 @@ async function watchPage(req, env) {
   return new Response(
     baseHtml(title, `
       <div class="watch-container">
-        <iframe src="https://dood.wf/e/${encodeURIComponent(video.filecode || code)}" allowfullscreen></iframe>
+
+        <div class="player-wrap">
+          <iframe
+            src="${escapeHtml(embedUrl)}"
+            scrolling="no"
+            frameborder="0"
+            allowfullscreen="true">
+          </iframe>
+        </div>
+
         <div class="watch-info">
           <h1>${escapeHtml(title)}</h1>
           <p>${escapeHtml(description)}</p>
@@ -998,12 +1020,12 @@ async function watchPage(req, env) {
         </div>
 
         ${recommendationHtml}
+
       </div>
     `, extraHead),
     { headers: { "content-type": "text/html; charset=utf-8" } }
   );
 }
-
 function embedPage(path) {
   const code = path.split("/").pop();
   if (!code) return new Response("Invalid", { status: 400 });
