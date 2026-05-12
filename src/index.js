@@ -1101,8 +1101,10 @@ async function homePage(req, env) {
       ${paginationHtml}
     `,
       `
-      <meta name="description" content="XStreaming home">
-      <meta name="robots" content="index,follow">
+      <meta name="description" content="Watch free HD movies, anime, and trending videos online with subtitle Indonesia on XStreaming">
+<meta name="keywords" content="streaming, anime, movies, hd video, subtitle indonesia, watch online, trending videos">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#e50914">
     `
     )
   );
@@ -1152,11 +1154,73 @@ async function searchPage(req, env) {
     : "";
 
   const extraHead = `
-    <meta name="description" content="Hasil pencarian video untuk ${escapeHtml(q)} di XStreaming">
-    <meta name="keywords" content="${escapeHtml([q, ...allTags].filter(Boolean).join(", "))}">
-    <meta name="robots" content="index,follow">
-    <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
-  `;
+  <meta name="description" content="Watch ${escapeHtml(q)} videos online in HD quality with subtitle Indonesia on XStreaming. Streaming free trending content anytime.">
+  <meta name="keywords" content="${escapeHtml([q, ...(allTags || []), "watch online", "hd video", "streaming", "subtitle indonesia"].filter(Boolean).join(", "))}">
+  
+  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
+  <meta name="theme-color" content="#e50914">
+
+  <link rel="canonical" href="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
+  
+
+  <!-- Open Graph (penting untuk share WhatsApp/FB) -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Search: ${escapeHtml(q)} | XStreaming">
+  <meta property="og:description" content="Watch ${escapeHtml(q)} videos in HD with subtitle Indonesia">
+  <meta property="og:url" content="${escapeHtml(url.origin + url.pathname + "?q=" + encodeURIComponent(q))}">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Search: ${escapeHtml(q)}">
+  <meta name="twitter:description" content="Watch trending ${escapeHtml(q)} videos online HD">
+
+  <script type="application/ld+json">
+  ${JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "SearchResultsPage",
+    "name": `Search: ${q}`,
+    "description": `Hasil pencarian video untuk ${q} di XStreaming`,
+    "url": `${url.origin}${url.pathname}?q=${encodeURIComponent(q)}`,
+    "mainEntity": {
+      "@type": "ItemList",
+      "name": `Search results for ${q}`,
+      "itemListOrder": "https://schema.org/ItemListOrderDescending",
+      "numberOfItems": Number(allTags?.length || 0),
+      "itemListElement": (allTags || []).slice(0, 10).map((tag, index) => ({
+        "@type": "ListItem",
+        "position": index + 1,
+        "name": tag,
+        "url": `${url.origin}/tag/${encodeURIComponent(tag)}`
+      }))
+    }
+  })}
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "XStreaming",
+    "url": "https://xstreaming.hanadrophtml.workers.dev/",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": "https://xstreaming.hanadrophtml.workers.dev/search?q={search_term_string}",
+      "query-input": "required name=search_term_string"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  ${JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "Home", "item": origin },
+      { "@type": "ListItem", "position": 2, "name": `Search: ${q}`, "item": `${url.origin}${url.pathname}?q=${encodeURIComponent(q)}` }
+    ]
+  })}
+  </script>
+`;
 
   return htmlResponse(
     baseHtml(
