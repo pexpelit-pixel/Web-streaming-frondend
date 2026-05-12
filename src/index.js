@@ -262,8 +262,14 @@ function jsonLdVideo(video, meta, origin, canonicalUrl) {
     description: meta?.description || `Watch ${meta?.title || video?.title || "video"} online`,
     thumbnailUrl: [video?.single_img || video?.splash_img || ""].filter(Boolean),
     uploadDate: video?.uploaded || video?.upload_date || video?.created_at || new Date().toISOString(),
+    duration: video?.length ? `PT${video.length}S` : undefined,
     contentUrl: canonicalUrl || `${origin}/watch?file_code=${video?.file_code || ""}`,
     embedUrl: `${origin}/e/${video?.file_code || ""}`,
+    genre: meta?.tags?.slice(0, 5) || [],
+    publisher: {
+      "@type": "Organization",
+      "name": "XStreaming"
+    },
     interactionStatistic: {
       "@type": "InteractionCounter",
       interactionType: { "@type": "WatchAction" },
@@ -400,20 +406,26 @@ async function pingIndexNow(origin) {
 }
 
 async function resolveEmbedUrl(env, code) {
-  const fallback = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
+  const fallbackMyVid = `https://myvidplay.com/e/${encodeURIComponent(code)}`;
+  const fallbackDood = `https://dood.wf/e/${encodeURIComponent(code)}`;
+
   try {
     const info = await doodFetch(env, "/api/file/info", { file_code: code });
     const video = info?.result?.[0] || info?.result || {};
+
+    // Prioritas: embed resmi → dood.wf → myvidplay.com
     return (
       video?.protected_embed ||
       video?.embed_url ||
       video?.embed ||
       video?.iframe ||
       video?.embed_code ||
-      fallback
+      fallbackDood ||              // ← utama dulu
+      fallbackMyVid                // ← cadangan terakhir
     );
   } catch {
-    return fallback;
+    // Kalau API error, coba dood.wf dulu, baru myvidplay
+    return fallbackDood;
   }
 }
 
