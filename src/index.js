@@ -1,5 +1,5 @@
 // worker.js – XStreaming (Netflix-style + API Proxy + Upload + SEO)
-// Binding: DOOD_API (text), DOOD_KEY (secret), METADATA (KV optional)
+// Binding: DOOD_API (text), DOOD_KEY (secret), METADATA (KV optional), DB (D1 optional)
 
 const corsHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -13,6 +13,7 @@ const SEARCH_PER_PAGE = 100;
 const SEARCH_RESULT_LIMIT = 250;
 const SEARCH_CACHE_TTL = 600;
 const HOT_LOOKBACK_HOURS = 96;
+const SITEMAP_PAGE_SIZE = 50000;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -58,7 +59,8 @@ function extractFolders(data) {
     data?.result?.folders ||
     data?.result?.data ||
     data?.folders ||
-    data?.result || []
+    data?.result ||
+    []
   );
 }
 
@@ -215,6 +217,13 @@ function isBot(ua = "") {
     "discordbot",
     "embed",
     "preview",
+    "google-inspectiontool",
+    "googleother",
+    "adsbot-google",
+    "applebot",
+    "petalbot",
+    "semrushbot",
+    "ahrefsbot",
   ].some((x) => ua.includes(x));
 }
 
@@ -348,7 +357,40 @@ async function saveMeta(env, fileCode, payload) {
 }
 
 async function getMetaBySlug(env, slug) {
-  if (!env.METADATA || !slug) return null;
+  if (!slug) return null;
+
+  if (env.DB) {
+    try {
+      const row = await env.DB
+        .prepare(
+          `SELECT file_code, slug, title, description, tags, folder_id, folder_name, source, filename, views, created_at, updated_at
+           FROM videos
+           WHERE slug = ?
+           LIMIT 1`
+        )
+        .bind(slug)
+        .first();
+
+      if (row?.file_code) {
+        return {
+          file_code: row.file_code,
+          slug: row.slug,
+          title: row.title,
+          description: row.description,
+          tags: row.tags ? safeJsonParse(row.tags, []) : [],
+          folder_id: row.folder_id,
+          folder_name: row.folder_name,
+          source: row.source,
+          filename: row.filename,
+          views: row.views,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        };
+      }
+    } catch {}
+  }
+
+  if (!env.METADATA) return null;
   try {
     return await env.METADATA.get(`slug:${slug}`, { type: "json" });
   } catch {
@@ -412,16 +454,15 @@ async function resolveEmbedUrl(env, code) {
     const info = await doodFetch(env, "/api/file/info", { file_code: code });
     const video = info?.result?.[0] || info?.result || {};
 
-    // Ambil kandidat pertama yang tidak kosong
-    let raw = video?.protected_embed ||
-              video?.embed_url ||
-              video?.embed ||
-              video?.iframe ||
-              video?.embed_code;
+    let raw =
+      video?.protected_embed ||
+      video?.embed_url ||
+      video?.embed ||
+      video?.iframe ||
+      video?.embed_code;
 
-    // Kalau dapat tapi relatif (tanpa http), jadikan absolut
-    if (raw && !raw.startsWith('http')) {
-      raw = 'https://dood.wf' + (raw.startsWith('/') ? '' : '/') + raw;
+    if (raw && !String(raw).startsWith("http")) {
+      raw = "https://dood.wf" + (String(raw).startsWith("/") ? "" : "/") + raw;
     }
 
     return raw || fallbackDood || fallbackMyVid;
@@ -429,6 +470,7 @@ async function resolveEmbedUrl(env, code) {
     return fallbackDood;
   }
 }
+
 async function enrichVideos(env, videos = [], folderMap = new Map()) {
   if (!Array.isArray(videos) || !videos.length) return [];
   if (!env.METADATA) {
@@ -1315,7 +1357,6 @@ async function embedPage(req, env, path) {
   const code = path.split("/").pop();
   if (!code) return new Response("Invalid", { status: 400 });
 
-  // Gunakan resolveEmbedUrl untuk mendapatkan URL terbaik
   let embedUrl;
   try {
     embedUrl = await resolveEmbedUrl(env, code);
@@ -1323,7 +1364,6 @@ async function embedPage(req, env, path) {
     embedUrl = "";
   }
 
-  // Fallback keras kalau kosong
   if (!embedUrl || embedUrl.trim() === "") {
     embedUrl = `https://dood.wf/e/${encodeURIComponent(code)}`;
   }
@@ -1350,32 +1390,234 @@ async function embedPage(req, env, path) {
   );
 }
 
-async function sitemapPage(env, origin) {
-  if (!env.METADATA) {
-    return new Response("", { status: 404 });
-  }
+async function buildStaticSitemapXml(origin) {
+  const staticUrls = [
+    `${origin}/`,
+    `${origin}/trending`,
+    `${origin}/search`,
+    `${origin}/tag/anime`,
+    `${origin}/tag/action`,
+    `${origin}/tag/drama`,
+    `${origin}/tag/comedy`,
+    `${origin}/tag/music`,
+    `${origin}/tag/sports`,
+    `${origin}/tag/viral`,
+    `${origin}/tag/education`,
+    `${origin}/tag/hot`,
+  ];
 
-  const list = await env.METADATA.list({ prefix: "slug:" });
   let urls = "";
+  for (const loc of staticUrls) {
+    urls += `<url><loc>${escapeHtml(loc)}</loc></url>`;
+  }
 
-  for (const key of list.keys) {
-    const slug = key.name.replace("slug:", "");
-    const data = await env.METADATA.get(key.name, { type: "json" });
-    if (data?.file_code) {
-      urls += `<url><loc>${origin}/video/${slug}</loc></url>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+</urlset>`;
+}
+
+async function getDbVideoCount(env) {
+  if (!env.DB) return 0;
+  try {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM videos`).first();
+    return Number(row?.c || 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function getDbSitemapRows(env, limit, offset) {
+  if (!env.DB) return [];
+  try {
+    const res = await env.DB
+      .prepare(
+        `SELECT slug, updated_at
+         FROM videos
+         ORDER BY id DESC
+         LIMIT ? OFFSET ?`
+      )
+      .bind(limit, offset)
+      .all();
+    return Array.isArray(res?.results) ? res.results : [];
+  } catch {
+    return [];
+  }
+}
+
+async function buildVideoSitemapXml(env, origin, pageNumber = 1) {
+  const page = Math.max(1, parseInt(pageNumber, 10) || 1);
+  const offset = (page - 1) * SITEMAP_PAGE_SIZE;
+  const rows = await getDbSitemapRows(env, SITEMAP_PAGE_SIZE, offset);
+
+  let urls = "";
+  for (const row of rows) {
+    const slug = String(row?.slug || "").trim();
+    if (!slug) continue;
+    urls += `<url>
+  <loc>${escapeHtml(`${origin}/video/${encodeURIComponent(slug)}`)}</loc>
+  ${row?.updated_at ? `<lastmod>${escapeHtml(String(row.updated_at))}</lastmod>` : ""}
+</url>`;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+</urlset>`;
+}
+
+async function sitemapPage(env, origin) {
+  try {
+    if (env.DB) {
+      const total = await getDbVideoCount(env);
+      if (total <= SITEMAP_PAGE_SIZE) {
+        const videoXml = await buildVideoSitemapXml(env, origin, 1);
+        const staticXml = await buildStaticSitemapXml(origin);
+
+        return new Response(
+          `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${videoXml.replace(/^<\?xml[\s\S]*?<urlset[^>]*>/, "").replace(/<\/urlset>\s*$/, "")}
+${staticXml.replace(/^<\?xml[\s\S]*?<urlset[^>]*>/, "").replace(/<\/urlset>\s*$/, "")}
+</urlset>`,
+          { headers: { "content-type": "application/xml; charset=utf-8" } }
+        );
+      }
+
+      const pages = Math.max(1, Math.ceil(total / SITEMAP_PAGE_SIZE));
+      let items = `<sitemap><loc>${escapeHtml(origin)}/sitemap-static.xml</loc></sitemap>`;
+      for (let i = 1; i <= pages; i++) {
+        items += `<sitemap><loc>${escapeHtml(origin)}/sitemap-videos-${i}.xml</loc></sitemap>`;
+      }
+
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${items}
+</sitemapindex>`,
+        { headers: { "content-type": "application/xml; charset=utf-8" } }
+      );
     }
+
+    if (!env.METADATA) {
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>${escapeHtml(origin)}/</loc></url>
+</urlset>`,
+        { headers: { "content-type": "application/xml; charset=utf-8" } }
+      );
+    }
+
+    const list = await env.METADATA.list({ prefix: "slug:", limit: 1000 });
+    let urls = "";
+
+    for (const key of list.keys || []) {
+      const slug = key.name.replace("slug:", "");
+      const data = await env.METADATA.get(key.name, { type: "json" });
+      if (data?.file_code) {
+        urls += `<url><loc>${escapeHtml(origin)}/video/${escapeHtml(slug)}</loc></url>`;
+      }
+    }
+
+    urls += `<url><loc>${escapeHtml(origin)}/trending</loc></url>`;
+    urls += `<url><loc>${escapeHtml(origin)}/search</loc></url>`;
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
+    return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8" } });
+  } catch (e) {
+    return new Response(
+      `Sitemap Error:\n${e.stack || e.message || String(e)}`,
+      {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      }
+    );
   }
+}
 
-  const staticTags = ["anime", "action", "drama", "comedy", "music", "sports", "viral", "education", "trending", "hot"];
-  for (const t of staticTags) {
-    urls += `<url><loc>${origin}/tag/${encodeURIComponent(t)}</loc></url>`;
+async function saveDbVideo(env, payload = {}) {
+  if (!env.DB || !payload?.file_code) return false;
+
+  const now = payload.updated_at || payload.created_at || new Date().toISOString();
+  const tagsJson = JSON.stringify(Array.isArray(payload.tags) ? payload.tags : []);
+
+  try {
+    await env.DB
+      .prepare(
+        `INSERT INTO videos (
+          file_code, slug, title, description, tags,
+          folder_id, folder_name, source, filename, views,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_code) DO UPDATE SET
+          slug = excluded.slug,
+          title = excluded.title,
+          description = excluded.description,
+          tags = excluded.tags,
+          folder_id = excluded.folder_id,
+          folder_name = excluded.folder_name,
+          source = excluded.source,
+          filename = excluded.filename,
+          views = excluded.views,
+          updated_at = excluded.updated_at`
+      )
+      .bind(
+        String(payload.file_code || ""),
+        String(payload.slug || ""),
+        String(payload.title || ""),
+        String(payload.description || ""),
+        tagsJson,
+        String(payload.folder_id || "0"),
+        String(payload.folder_name || ""),
+        String(payload.source || ""),
+        String(payload.filename || ""),
+        String(payload.views || "0"),
+        String(payload.created_at || now),
+        String(now)
+      )
+      .run();
+
+    return true;
+  } catch {
+    return false;
   }
+}
 
-  urls += `<url><loc>${origin}/trending</loc></url>`;
-  urls += `<url><loc>${origin}/search</loc></url>`;
+async function saveDbSlugMap(env, slug, fileCode) {
+  if (!env.DB || !slug || !fileCode) return false;
+  try {
+    await env.DB
+      .prepare(
+        `INSERT INTO video_slugs (slug, file_code, created_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(slug) DO UPDATE SET
+           file_code = excluded.file_code,
+           updated_at = excluded.updated_at`
+      )
+      .bind(String(slug), String(fileCode), new Date().toISOString(), new Date().toISOString())
+      .run();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
-  return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8" } });
+async function getDbVideoByFileCode(env, fileCode) {
+  if (!env.DB || !fileCode) return null;
+  try {
+    return await env.DB
+      .prepare(
+        `SELECT file_code, slug, title, description, tags, folder_id, folder_name, source, filename, views, created_at, updated_at
+         FROM videos
+         WHERE file_code = ?
+         LIMIT 1`
+      )
+      .bind(fileCode)
+      .first();
+  } catch {
+    return null;
+  }
 }
 
 async function handleApi(req, env, ctx) {
@@ -1449,10 +1691,28 @@ async function handleApi(req, env, ctx) {
           folder_name: body.folder_name || "",
           source: "url",
           created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
           slug: slugify(body.new_title || body.title || fileCode),
+          views: String(data?.views || "0"),
+          filename: "",
         };
         await saveMeta(env, fileCode, meta);
         await saveSlugMap(env, meta.slug, fileCode);
+        await saveDbVideo(env, {
+          file_code: fileCode,
+          slug: meta.slug,
+          title: meta.title,
+          description: meta.description,
+          tags: meta.tags,
+          folder_id: meta.folder_id,
+          folder_name: meta.folder_name,
+          source: meta.source,
+          filename: meta.filename,
+          views: meta.views,
+          created_at: meta.created_at,
+          updated_at: meta.updated_at,
+        });
+        await saveDbSlugMap(env, meta.slug, fileCode);
       }
 
       if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
@@ -1538,10 +1798,27 @@ async function handleApi(req, env, ctx) {
           source: "file",
           filename: file.name || "",
           created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
           slug: slugify(new_title || file.name || fileCode),
+          views: String(uploadData?.views || "0"),
         };
         await saveMeta(env, fileCode, meta);
         await saveSlugMap(env, meta.slug, fileCode);
+        await saveDbVideo(env, {
+          file_code: fileCode,
+          slug: meta.slug,
+          title: meta.title,
+          description: meta.description,
+          tags: meta.tags,
+          folder_id: meta.folder_id,
+          folder_name: meta.folder_name,
+          source: meta.source,
+          filename: meta.filename,
+          views: meta.views,
+          created_at: meta.created_at,
+          updated_at: meta.updated_at,
+        });
+        await saveDbSlugMap(env, meta.slug, fileCode);
       }
 
       if (ctx) ctx.waitUntil(pingIndexNow(new URL(req.url).origin));
@@ -1588,7 +1865,26 @@ async function handleApi(req, env, ctx) {
       if (body.file_code) {
         const meta = (await getMeta(env, body.file_code)) || {};
         meta.title = body.title;
+        meta.updated_at = new Date().toISOString();
         await saveMeta(env, body.file_code, meta);
+
+        const currentDb = await getDbVideoByFileCode(env, body.file_code);
+        if (currentDb) {
+          await saveDbVideo(env, {
+            file_code: body.file_code,
+            slug: currentDb.slug || slugify(body.title || body.file_code),
+            title: body.title,
+            description: currentDb.description || meta.description || "",
+            tags: currentDb.tags ? safeJsonParse(currentDb.tags, []) : (Array.isArray(meta.tags) ? meta.tags : []),
+            folder_id: currentDb.folder_id || meta.folder_id || "0",
+            folder_name: currentDb.folder_name || meta.folder_name || "",
+            source: currentDb.source || meta.source || "",
+            filename: currentDb.filename || meta.filename || "",
+            views: currentDb.views || meta.views || "0",
+            created_at: currentDb.created_at || meta.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        }
       }
 
       return json(data);
@@ -1607,7 +1903,26 @@ async function handleApi(req, env, ctx) {
       if (body.file_code) {
         const meta = (await getMeta(env, body.file_code)) || {};
         meta.folder_id = String(body.fld_id);
+        meta.updated_at = new Date().toISOString();
         await saveMeta(env, body.file_code, meta);
+
+        const currentDb = await getDbVideoByFileCode(env, body.file_code);
+        if (currentDb) {
+          await saveDbVideo(env, {
+            file_code: body.file_code,
+            slug: currentDb.slug || slugify(currentDb.title || body.file_code),
+            title: currentDb.title || meta.title || "",
+            description: currentDb.description || meta.description || "",
+            tags: currentDb.tags ? safeJsonParse(currentDb.tags, []) : (Array.isArray(meta.tags) ? meta.tags : []),
+            folder_id: String(body.fld_id),
+            folder_name: currentDb.folder_name || meta.folder_name || "",
+            source: currentDb.source || meta.source || "",
+            filename: currentDb.filename || meta.filename || "",
+            views: currentDb.views || meta.views || "0",
+            created_at: currentDb.created_at || meta.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        }
       }
 
       return json(data);
@@ -1670,7 +1985,6 @@ export default {
           embedUrl = "";
         }
 
-        // Fallback keras kalau kosong
         if (!embedUrl || embedUrl.trim() === "") {
           embedUrl = `https://dood.wf/e/${encodeURIComponent(code)}`;
         }
@@ -1713,14 +2027,12 @@ iframe{
         );
       }
 
-      if (path.startsWith("/video/") && env.METADATA) {
+      if (path.startsWith("/video/")) {
         const slug = path.replace("/video/", "");
         const data = await getMetaBySlug(env, slug);
-
         if (data?.file_code) {
           return watchPage(req, env, data.file_code, path);
         }
-
         return new Response("Not found", { status: 404 });
       }
 
@@ -1728,8 +2040,26 @@ iframe{
         return sitemapPage(env, url.origin);
       }
 
+      if (path === "/sitemap-static.xml") {
+        return new Response(await buildStaticSitemapXml(url.origin), {
+          headers: { "content-type": "application/xml; charset=utf-8" },
+        });
+      }
+
+      if (/^\/sitemap-videos-\d+\.xml$/.test(path)) {
+        const pageNum = parseInt(path.match(/^\/sitemap-videos-(\d+)\.xml$/)?.[1] || "1", 10);
+        return new Response(await buildVideoSitemapXml(env, url.origin, pageNum), {
+          headers: { "content-type": "application/xml; charset=utf-8" },
+        });
+      }
+
       if (path === "/robots.txt") {
-        const robots = `User-agent: *\nAllow: /\nCrawl-delay: 0\nSitemap: ${url.origin}/sitemap.xml`;
+        const robots = `User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /embed/
+Disallow: /e/
+Sitemap: ${url.origin}/sitemap.xml`;
         return new Response(robots, { headers: { "content-type": "text/plain; charset=utf-8" } });
       }
 
